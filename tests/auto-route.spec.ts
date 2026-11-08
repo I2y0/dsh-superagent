@@ -58,6 +58,8 @@ function harness(config: unknown = CONFIG, settings = SettingsSchema.parse({}), 
   const handlers = new Map<string, (payload: { triggerId: string }, key: string) => Promise<void>>()
   const delivered: string[] = []
   let engine!: Engine
+  /** 反推失败时留的话（0021 二：不许静默）。 */
+  const warned: string[] = []
   const effects = {
     enqueue: (kind: string, key: string, payload: unknown) => { queued.push({ kind, key, payload: payload as { triggerId: string } }) },
     handle: (kind: string, run: unknown) => { handlers.set(kind, run as never) },
@@ -67,6 +69,7 @@ function harness(config: unknown = CONFIG, settings = SettingsSchema.parse({}), 
     commands: {} as AssessorHost['commands'],
     deployment: testDeployment({ stateDir }),
     settings: () => settings,
+    warn: (message: string) => { warned.push(message) },
     threadContext: () => undefined,
     effects,
     paused: () => false,

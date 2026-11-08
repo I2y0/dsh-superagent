@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, afterAll } from 'vitest'
-import { loadAutoRoute, matchesPath, resolveForTest, sceneFromForTest } from '../src/app/auto-route.ts'
+import { autoRouteAssessment, loadAutoRoute, matchesPath, resolveForTest, sceneFromForTest } from '../src/app/auto-route.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'scene-from-path-'))
 const qqDir = join(root, '3-scenes', 'qq')
@@ -130,5 +130,33 @@ describe('schema 往返 —— 规则是从 JSON 解析出来的，不是手写�
     const r = resolveForTest(signal(join(qqDir, 'inbox', '0001-a.md')), parsed)
     expect(r?.how).toBe('scene')
     expect(r?.detail).toBe('qq')
+  })
+})
+
+// ★ 0021 二：反推失败**不许静默**，必须留下能查的一句话。
+//   今天已经吃过一次「静默丢」的亏 —— 信来了没开票，谁都查不出来。
+describe('反推失败要留话（不许静默）', () => {
+  const dir2 = mkdtempSync(join(tmpdir(), 'scene-miss-'))
+  const file2 = join(dir2, 'auto-route.json')
+  afterAll(() => rmSync(dir2, { recursive: true, force: true }))
+
+  it('★ 路径推不出场景 → 那句话里带得上信号路径和 payload.path', () => {
+    writeFileSync(file2, JSON.stringify({
+      enabled: true, humanOnly: false,
+      rules: [{ id: 'nene-inbox', paths: ['file.**'], sceneFromPath: true, actor: '', human: false, rule: 'msp-local' }],
+    }))
+    const rule2 = loadAutoRoute(dir2)!.rules[0]!
+    const missed: string[] = []
+    const outside = signal(join(root, 'Downloads', 'Report.pdf'))
+    const r = autoRouteAssessment(
+      { triggers: [outside] } as never,
+      { policy: { rules: [{ id: 'msp-local', enabled: true }] } } as never,
+      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule2] },
+      (m) => missed.push(m),
+    )
+    expect(r).toBeUndefined()                       // 仍然兜底，不自己开票
+    expect(missed.length).toBe(1)                   // 但要说话
+    expect(missed[0]).toContain('file.created')     // 带信号路径
+    expect(missed[0]).toContain('Report.pdf')       // 带 payload.path
   })
 })

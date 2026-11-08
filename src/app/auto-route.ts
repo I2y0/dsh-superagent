@@ -233,7 +233,8 @@ export function matchedPhrase(text: string, phrases: readonly string[]): string 
 interface Resolution { rule: AutoRouteRule; decision: 'accept' | 'silent'; how: 'prefix' | 'phrase' | 'scene'; detail: string; title: string; payload: Record<string, unknown> }
 
 /** The rule that settles one Trigger, or `undefined` when it is the seat's to decide. */
-function resolveTrigger(trigger: Candidate['triggers'][number], config: AutoRouteConfig): Resolution | undefined {
+function resolveTrigger(trigger: Candidate['triggers'][number], config: AutoRouteConfig,
+  onMiss?: (message: string) => void): Resolution | undefined {
   if (!config.enabled || config.rules.length === 0) return undefined
   let silent: Resolution | undefined
   for (const rule of config.rules) {
@@ -251,6 +252,10 @@ function resolveTrigger(trigger: Candidate['triggers'][number], config: AutoRout
     if (rule.sceneFromPath) {
       const scene = sceneFrom(trigger)
       if (scene) return { rule, decision: 'accept', how: 'scene', detail: scene.id, title, payload: { ...payload, scene } }
+      // ★ 2026-11-09（0021 二）：反推失败**必须留下痕迹**，不许静默当没收到。
+      //   照原样继续走 prefix/phrase 兜底，但要说一句，否则「信来了没开票」永远查不出来。
+      onMiss?.(`auto-route ${rule.id}: 信号路径推不出场景（mspPath=${signalPath(trigger) || '无'}，`
+        + `payload.path=${typeof payload.path === 'string' ? payload.path : '无'}），按前缀/短语兜底`)
     }
     const prefix = rule.prefixes.find(item => title.startsWith(item))
     if (prefix) return { rule, decision: 'accept', how: 'prefix', detail: prefix, title, payload }
@@ -271,12 +276,13 @@ export const resolveForTest = (trigger: Candidate['triggers'][number], rule: Aut
   resolveTrigger(trigger, { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule] })
 
 /** The resolution every Trigger of one Eval agrees on, or `undefined` when the seat should decide the batch. */
-function resolveCandidate(candidate: Candidate, config: AutoRouteConfig): Resolution | undefined {
+function resolveCandidate(candidate: Candidate, config: AutoRouteConfig,
+  onMiss?: (message: string) => void): Resolution | undefined {
   if (!config.enabled || config.rules.length === 0) return undefined
   if (candidate.triggers.length === 0) return undefined
   let resolved: Resolution | undefined
   for (const trigger of candidate.triggers) {
-    const item = resolveTrigger(trigger, config)
+    const item = resolveTrigger(trigger, config, onMiss)
     if (!item) return undefined
     // One Eval may hold a batch: all of it must be the same kind of dispatch, or the seat decides.
     if (resolved && (resolved.rule.id !== item.rule.id || resolved.decision !== item.decision || resolved.detail !== item.detail)) return undefined
@@ -297,9 +303,10 @@ export interface AutoRouteChoice {
  * Build the Assessment a candidate would have received from the main Session.
  * @returns the choice for `assessmentOutcome`, or `undefined` when the candidate is not configured work.
  */
-export function autoRouteAssessment(candidate: Candidate, settings: Settings, config: AutoRouteConfig | undefined): AutoRouteChoice | undefined {
+export function autoRouteAssessment(candidate: Candidate, settings: Settings, config: AutoRouteConfig | undefined,
+  onMiss?: (message: string) => void): AutoRouteChoice | undefined {
   if (!config) return undefined
-  const resolution = resolveCandidate(candidate, config)
+  const resolution = resolveCandidate(candidate, config, onMiss)
   if (!resolution) return undefined
   const enabled = settings.policy.rules.filter(rule => rule.enabled)
   // A configured rule that an operator disabled must not keep deciding: the seat decides instead.

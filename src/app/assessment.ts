@@ -55,6 +55,8 @@ export interface AssessorHost {
   /** Durable effect queue through which candidate assessments are delivered. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
   settings(): Settings
+  /** Reports something an operator needs to see but that must not fail an Eval, such as a scene it could not derive. */
+  warn(message: string): void
   /** Whether processing is paused, which holds candidate deliveries. */
   paused(): boolean
   /** Thread context reader for `trigger`'s Source, or `undefined` when the Source has none. */
@@ -105,7 +107,8 @@ export class MasterAssessor implements Assessor {
       const candidate = this.host.engine.candidate(triggerId)
       if (candidate?.evalId !== evalId) return
       const settings = this.host.settings()
-      const choice = autoRouteAssessment(candidate, settings, loadAutoRoute(this.host.deployment.stateDir))
+      const choice = autoRouteAssessment(candidate, settings, loadAutoRoute(this.host.deployment.stateDir),
+        message => this.host.warn(message))
       let outcome
       try { outcome = choice && assessmentOutcome(choice.assessment, settings, candidate.strength) } catch { outcome = undefined }
       // Anything the deterministic path cannot settle falls back to the seat's own assessment rather than deciding on its behalf.
@@ -118,7 +121,8 @@ export class MasterAssessor implements Assessor {
   /** Enqueues the work that carries a candidate toward a decision: auto-route when configured for it, else the main Session's card. */
   request(candidate: Candidate): void {
     const triggerId = candidate.triggers[0]!.id
-    const route = autoRouteAssessment(candidate, this.host.settings(), loadAutoRoute(this.host.deployment.stateDir))
+    const route = autoRouteAssessment(candidate, this.host.settings(), loadAutoRoute(this.host.deployment.stateDir),
+      message => this.host.warn(message))
     if (route) this.host.effects.enqueue('route', candidate.evalId, { triggerId })
     else this.host.effects.enqueue('assessment', candidate.evalId, { triggerId })
   }
