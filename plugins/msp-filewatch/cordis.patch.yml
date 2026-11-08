@@ -1,0 +1,9 @@
+# 这一行把插件挂进宿主。config 会被整体替换（不合并），所以每一项都要写全。
+- insert:
+    - id: msp-filewatch
+      name: dsh-msp-filewatch
+      config:
+        dirs:
+          - C:/Users/asus/Downloads
+        nodeName: filewatch
+        settleMs: 1500

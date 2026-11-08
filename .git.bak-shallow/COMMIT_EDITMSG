@@ -1,0 +1,10 @@
+feat: auto-route + resident + scene workspace for nene deployment
+
+- src/app/auto-route.ts: deterministic dispatch by title prefix / payload phrases,
+  bypassing the candidate card relay (rules live in state/auto-route.json)
+- src/core/resident.ts: semi-resident worker kept warm between work items
+- scene workspace: ticket execution.directory points at 3-scenes/<id>
+- tickets/assignments/model: supporting changes
+- tests: auto-route / resident / batch / scene-workspace specs
+
+Written 2026-11-04 for the nene deployment; committed 2026-11-09.

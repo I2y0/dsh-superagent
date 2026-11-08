@@ -1,0 +1,1 @@
+{"version":3,"file":"framing.d.ts","sourceRoot":"","sources":["../../src/protocol/framing.ts"],"names":[],"mappings":"AAAA;;GAEG;AAEH,wCAAwC;AACxC,qBAAa,YAAY;IACvB,OAAO,CAAC,GAAG,CAA2B;IAEtC,IAAI,CAAC,KAAK,EAAE,MAAM,GAAG,MAAM,EAAE;CAc9B;AAED,wBAAgB,YAAY,CAAC,IAAI,EAAE,MAAM,GAAG,UAAU,GAAG,MAAM,CAK9D"}

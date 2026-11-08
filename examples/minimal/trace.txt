@@ -1,0 +1,40 @@
+
+========================================================================
+A. 没有经验覆盖：这件事不该存在
+========================================================================
+  Signal      file.created {"name":"Invoice-2026.pdf","bytes":18234}
+  Gate        structural: REJECTED (no experience covers this event)
+  Receipt     held back — no experience covers this event
+
+========================================================================
+B. 经验 doc-archive，L1（授权：直接办）
+========================================================================
+  Signal      file.created {"name":"Invoice-2026.pdf","bytes":18234}
+  Gate        structural: admitted
+  Experience  doc-archive matched  (trust=L1, act silently)
+  Admission   s=0.63 -> interrupt
+  Act         moved to Documents/Work/Invoice-2026.pdf
+  Receipt     done — moved to Documents/Work/Invoice-2026.pdf
+
+========================================================================
+C. 同一条经验，只把 L1 改成 L3（授权：先问）
+========================================================================
+  Signal      file.created {"name":"Invoice-2026.pdf","bytes":18234}
+  Gate        structural: admitted
+  Experience  doc-archive matched  (trust=L3, ask first)
+  Admission   s=0.42 -> digest
+  Act         declined — consent required, and this source has no reply channel
+  Receipt     waiting — "move Invoice-2026.pdf to Documents/Work/?"   (file kept: true)
+
+========================================================================
+结果
+========================================================================
+  A  held_back
+  B  done
+  C  waiting
+
+  Documents/Work/: Invoice-2026.pdf
+  Downloads/:      Invoice-2026.pdf
+
+  同一条经验、同一个信号、同一个执行者——只有 trust level 不同。
+
