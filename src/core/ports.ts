@@ -1,6 +1,7 @@
 /** Ports the core depends on. Sources, policies, assessors, executors, and channels are project-specific. */
 import type { Assignment, ChannelRef, Decision, DecisionKind, Mandate, MandateBasis, Strength, Thread, Ticket, TicketEndBy, TicketOutcome, Trigger }
   from './model.ts'
+import type { ResidentRules } from './resident.ts'
 import type { Reason } from './reasons.ts'
 
 /** Gate admission result: either inadmissible with a reason code, or admissible with strength and MandateBasis. */
@@ -24,6 +25,8 @@ export interface Policy {
   admitsInferred(rules: readonly string[]): boolean
   /** How long an assessor may take before an eval is recorded as unavailable. */
   evalTimeoutMs: number
+  /** The cleaning rules of a semi-resident ticket; a Policy without them uses `RESIDENT_RULES`. */
+  resident?: ResidentRules
 }
 
 /** What the assessor receives: bounded facts, never authority. */
@@ -42,7 +45,9 @@ export type AssessmentOutcome =
   | { kind: 'unavailable'; reason: string | Reason; audit?: Record<string, unknown> }
   /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, and `note` a routing note for its worker. */
   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
-    name?: string; note?: string }
+    name?: string; note?: string
+    /** The batch the Ticket is dispatched in; its report reaches the main Session once the batch's last Ticket has reported. */
+    batch?: string }
   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
 
 /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */
@@ -88,8 +93,11 @@ export interface DomainEvents {
   'eval.started': { evalId: string; threadKey: string; triggerIds: string[]; strength: Strength }
   'decision.recorded': { decisionId: string; kind: DecisionKind; threadKey: string }
   'ticket.created': { ticketId: string; decisionId: string; strength: Strength }
+  /** A finished ticket stays open for its next work item instead of ending (see `Tickets.idle`). */
+  'ticket.idle': { ticketId: string; outcome: TicketOutcome; rounds: number }
   'ticket.resumed': { ticketId: string; triggerId: string }
-  'ticket.ended': { ticketId: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string }
+  /** `reported` says the worker's own report brought the end, whose relay already carries the ended card. */
+  'ticket.ended': { ticketId: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string; reported?: true }
   'assignment.started': { ticketId: string; assignmentId: string }
   'assignment.ended': { ticketId: string; assignmentId: string; reason: string }
   'thread.subscribed': { threadKey: string; ticketId: string }

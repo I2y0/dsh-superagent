@@ -3,6 +3,7 @@ import { UserError } from './errors.ts'
 import { followupOwners, reached, threadKey } from './model.ts'
 import type { Thread, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Assessor, AssessmentOutcome, DomainEvent, DomainEvents, Executor, Outbox, Policy, Repositories, SourceScope } from './ports.ts'
+import { RESIDENT_RULES, type ResidentRules } from './resident.ts'
 
 export interface EngineOptions {
   repo: Repositories
@@ -26,6 +27,8 @@ export abstract class EnginePart {
   constructor(protected readonly options: EngineOptions) { this.repo = options.repo }
   protected now(): string { return this.options.now?.() ?? new Date().toISOString() }
   protected policy(): Policy { return this.options.policy() }
+  /** The cleaning rules of semi-resident tickets in force. */
+  protected resident(): ResidentRules { return this.policy().resident ?? RESIDENT_RULES }
   /** The tickets whose worker decides a person's follow-up: see `followupOwners`. */
   protected owners(trigger: Trigger): string[] { return followupOwners(trigger, this.repo) }
   /** Refuse a main-Session routing of a follow-up a ticket's worker still decides. */

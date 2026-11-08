@@ -16,6 +16,7 @@
     "./client": "./lib/client.js",
     "./github-watch": "./lib/github-watch.js",
     "./feishu-watch": "./lib/feishu-watch.js",
+    "./msp-watch": "./lib/msp-watch.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
@@ -48,7 +49,9 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "pnpm typecheck && pnpm test && pnpm build"
+    "test:node": "node --test \"tests/**/*.test.*\"",
+    "test:windows": "vitest run --exclude tests/service-script.spec.ts --exclude tests/sources.spec.ts --exclude tests/environment.spec.ts --exclude tests/deployment.spec.ts --exclude tests/commands.spec.ts",
+    "check": "pnpm typecheck && pnpm test && pnpm test:node && pnpm build"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
@@ -111,6 +114,7 @@
     "@types/proper-lockfile": "4.1.4",
     "@types/react": "18.3.28",
     "jsdom": "29.1.1",
+    "msp-ts": "file:vendor/msp-ts",
     "react": "18.3.1",
     "tsdown": "0.22.14",
     "typescript": "6.0.3",

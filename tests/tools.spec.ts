@@ -1,4 +1,6 @@
 /** Session tool registration, role-scoped resource reads, and routing/settings tool contracts. */
+import { rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { TICKET_STATES } from '../src/app/cards.ts'
 import { builtInBase, builtInParts, defaultPrompts } from '../src/app/prompts.ts'
@@ -90,6 +92,22 @@ it('saves with the prompt save tool an override without its base, refuses a part
   const tool = h.tools.get(h.runtime.masterId)!.get('orchestrator_prompts_save') as unknown as { description: string }
   expect(tool.description).not.toContain('overrides')
 })
+
+it('refuses the report that ends the work until the ticket\'s lessons are written, so the standard does not depend on good will', async () => {
+  const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
+  const lessons = join(ticket.execution!.directory, 'lessons.md')
+  const report = (state: string, summary: string) => h.runTool(sessionId, 'orchestrator_report', { state, summary })
+  rmSync(lessons, { force: true })
+  for (const state of ['ready', 'blocked', 'failed', 'dropped']) await expect(report(state, 'Done.')).rejects.toThrow(lessons)
+  // A progress report ends nothing, so the standard does not hold it back.
+  expect(await report('progress', 'Looking.')).toMatchObject({ reported: true })
+  writeFileSync(lessons, ' \n')
+  await expect(report('ready', 'Done.')).rejects.toThrow('is empty')
+  // `无` is a complete answer: a ticket with nothing to pass on still closes.
+  writeFileSync(lessons, '无\n')
+  expect(await report('ready', 'Done.')).toMatchObject({ reported: true })
+})
+
 
 it('keeps the main Session\'s resources from an Executor Session, which lists only its own', async () => {
   const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
@@ -413,8 +431,17 @@ it('relays a worker\'s report with its ticket card and the start of its summary,
     read: `ticket/${ticket.id}/result` })
   expect(String(report.summary)).toBe(summary.slice(0, 600))
   expect(report.ticket).not.toHaveProperty('preview')
-  // The end of the ticket, which the ready report brought, comes with its card.
-  expect(notices().at(-1)).toMatchObject({ ticket_ended: { ticket_id: ticket.id, state: 'completed' } })
+  // The end of the ticket, which the ready report brought, comes with its card, and no second notice wakes the main Session.
+  expect(report.ticket).toMatchObject({ state: 'completed', ended: { by: 'executor', reason: 'completed' } })
+  expect(notices().filter(notice => 'ticket_ended' in notice && (notice.ticket_ended as { ticket_id?: string }).ticket_id === ticket.id)).toEqual([])
+})
+
+it('notices an end no report announced, such as a person\'s stop', async () => {
+  const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
+  h.runtime.engine.stopTicket(ticket.id)
+  await h.runtime.idle()
+  expect(relaysOf('worker_report')).toEqual([])
+  expect(notices().at(-1)).toMatchObject({ ticket_ended: { ticket_id: ticket.id, state: 'stopped' } })
 })
 
 it('tells the main Session of the settings, prompts, requeues and unsubscriptions others made, never of its own', async () => {

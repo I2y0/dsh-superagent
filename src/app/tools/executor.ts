@@ -1,4 +1,6 @@
 /** Executor Session tools for reading ticket context, acknowledging requests, managing threads, handing back out-of-scope triggers, and reporting status. */
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { z } from 'zod'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
@@ -6,7 +8,7 @@ import { claimPull, readPull } from '../../sources/github-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
-import { reportRelay, threadFollowedNotice } from '../notices.ts'
+import { reportNotice, threadFollowedNotice } from '../notices.ts'
 import type { Sessions } from '../sessions.ts'
 import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
@@ -20,6 +22,20 @@ export interface ExecutorToolsHost {
   sendReplies(): Promise<void>
 }
 
+/** Reports whose state ends the assignment's work, each of which carries the ticket's lessons as the closing standard says. */
+const FINAL_STATES: ReadonlySet<string> = new Set(['ready', 'blocked', 'failed', 'dropped'])
+/**
+ * Why a report that ends the work is refused: the ticket's `lessons.md` must be written and not empty, so that what the ticket
+ * taught outlives the Session that learned it. Undefined once it is, and for a ticket without a directory to look in.
+ */
+export function missingLessons(directory: string | undefined): string | undefined {
+  if (!directory) return undefined
+  const file = join(directory, 'lessons.md')
+  const closing = 'what this ticket taught the next worker, one line per lesson saying what the pit was and how you found it; write 无 when there is nothing to pass on'
+  if (!existsSync(file)) return `Not recorded: a report that ends the work needs this ticket's lessons first. Write ${file} — ${closing} — then call orchestrator_report again.`
+  if (!readFileSync(file, 'utf8').trim()) return `Not recorded: ${file} is empty. Write ${closing}, then call orchestrator_report again.`
+  return undefined
+}
 export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
   const ticketId = ticket.id
   return [
@@ -85,16 +101,18 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
+        const refused = FINAL_STATES.has(args.state) ? missingLessons(current.execution?.directory) : undefined
+        if (refused) throw new Error(refused)
         const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : undefined
         // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
         return host.store.atomic(() => {
-          const refused = pull && claimPull(host.github, ticketId, pull)
-          if (refused) throw new Error(refused)
+          const refusedPull = pull && claimPull(host.github, ticketId, pull)
+          if (refusedPull) throw new Error(refusedPull)
           const report = { state: args.state, summary: args.summary, ...(args.human_action !== undefined ? { question: args.human_action } : {}),
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),
             ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}) }
           const updated = host.engine.report(ticketId, report)
-          const relay = reportRelay(updated, report)
+          const relay = reportNotice(host.store, updated, report)
           if (relay) host.sessions.relay(relay.id, relay.text)
           const notification = relay ? 'orchestrator' : 'internal_only'
           return { reported: true, notification, ...(updated.attention ? { attention: updated.attention } : {}) }

@@ -1,5 +1,11 @@
+.dsh*/
+.tools*/
 node_modules/
-lib/
+*.log
 .artifacts/
-.env
-coverage/
+.dsh*/
+.tools*/
+node_modules/
+*.log
+.artifacts/
+wsl-*.sh

@@ -2,6 +2,7 @@
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson } from './model.ts'
+import { idleResident, rotationLabel, rotationOf, rotationReason } from './resident.ts'
 import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
@@ -40,6 +41,8 @@ export class Tickets extends EnginePart {
     // Fall back to the last trigger for Evals recorded before `primary` existed.
     const primary = this.repo.triggers.get(evaluation.primary ?? triggerIds.at(-1)!)
     const origin = { triggerId: primary?.id ?? triggerIds[0]!, triggerIds }
+    // A resident worker follows one scenario: work in another one ends its ticket, so this one starts fresh (see `idle`).
+    this.rotateScenario(primary ? threadKey(primary.threads[0]!) : undefined)
     let ticket: Ticket = { id, title: outcome.title, decisionId, mandate, channels: [], assignments: [], inputs: [], undelivered: [],
       createdAt: at, updatedAt: at, origin }
     for (const triggerId of triggerIds) {
@@ -47,6 +50,12 @@ export class Tickets extends EnginePart {
       if (channel && !ticket.channels.some(item => sameChannel(item, channel))) ticket.channels.push(channel)
     }
     ticket = this.options.prepareTicket?.(ticket, outcome) ?? ticket
+    // A dispatch batch outlives the accept, so its Tickets report to the main Session together.
+    if (outcome.batch) ticket.batch = outcome.batch
+    // A semi-resident ticket stays open once its work finishes; the item count starts here (see `idle`).
+    if (this.resident().enabled) ticket.resident = { since: at, rounds: 0 }
+    const handoff = this.handoff(ticket)
+    if (handoff) { ticket.inputs.push(handoff); ticket.undelivered.push(handoff.id) }
     const assignment = this.newAssignment(ticket)
     this.repo.tickets.save(ticket)
     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
@@ -54,6 +63,76 @@ export class Tickets extends EnginePart {
     this.options.executor.start(this.require(id), assignment)
     this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
   }
+  /**
+   * The scenario a ticket works in: the Thread its origin Trigger came from, or its first Channel's Thread when the Trigger
+   * is gone. A resident ticket belongs to one, and work in another rotates it.
+   */
+  private scenarioOf(ticket: Ticket): string | undefined {
+    const ref = this.repo.triggers.get(ticket.origin.triggerId)?.threads[0]
+    return ref ? threadKey(ref) : undefined
+  }
+  /**
+   * The note handing a new ticket the work its predecessor in the same scenario left behind: the latest resident ticket a
+   * cleaning rule rotated, with the path of its worker's `memory.md` and its last report. Undefined when there is none.
+   */
+  private handoff(ticket: Ticket): TicketInput | undefined {
+    const scenario = this.scenarioOf(ticket)
+    if (!scenario) return undefined
+    const previous = this.repo.tickets.list()
+      .filter(item => item.id !== ticket.id && !!item.ended && !!rotationOf(item.ended.reason) && this.scenarioOf(item) === scenario)
+      .sort((a, b) => a.ended!.at.localeCompare(b.ended!.at)).at(-1)
+    if (!previous) return undefined
+    const reason = rotationOf(previous.ended!.reason)
+    const summary = latestReport(previous)?.summary.trim()
+    const directory = previous.execution?.directory
+    const text = [
+      `Resident handoff: the ticket that last worked this scenario (${previous.id}) ended by its cleaning rule (${reason}) after ${previous.resident?.rounds ?? 0} work item(s).`,
+      directory ? `Its worker's handoff memory, if it kept one, is ${directory}/memory.md; read it before you start.` : '',
+      summary ? `Its last report: ${summary}` : '',
+      'The handoff is context: do the request you were given, nothing more.',
+    ].filter(Boolean).join('\n')
+    return { id: key('input', ticket.id, 'handoff', previous.id), kind: 'note', text, at: this.now() }
+  }
+  /**
+   * End the resident tickets waiting in scenarios other than `scenario`, as a new ticket starts in it: a resident worker
+   * follows one scenario, and work elsewhere ends its ticket so the new one starts fresh (the scenario cleaning rule).
+   */
+  private rotateScenario(scenario: string | undefined): void {
+    const rules = this.resident()
+    if (!rules.enabled || !rules.onScenarioChange) return
+    for (const ticket of this.repo.tickets.open()) {
+      if (!idleResident(ticket) || this.scenarioOf(ticket) === scenario) continue
+      this.end(ticket.id, 'executor', ticket.resident?.outcome ?? 'completed', this.now(), rotationLabel('scenario'))
+    }
+  }
+  /**
+   * Keep a ticket whose work item finished open for its next one instead of ending it, unless a cleaning rule rotates it:
+   * the item count, the worker's context use, an error since the previous item, or a week since it became resident. A rotated
+   * ticket ends with `rotation:<reason>`, which the next ticket in its scenario reads (see `handoff`).
+   * @returns whether the ticket stays open.
+   */
+  idle(ticketId: string, outcome: TicketOutcome, at = this.now()): boolean {
+    const rules = this.resident()
+    const ticket = this.repo.tickets.get(ticketId)
+    if (!rules.enabled || !ticket || !liveTicket(ticket)) return false
+    const before = ticket.resident ?? { since: ticket.createdAt, rounds: 0 }
+    const resident = { ...before, rounds: before.rounds + 1, idleSince: at, outcome }
+    const rotation = rotationReason({ resident }, rules, at)
+    if (rotation) {
+      ticket.resident = resident; ticket.updatedAt = at
+      this.repo.tickets.save(ticket)
+      this.end(ticketId, 'executor', outcome, at, rotationLabel(rotation), true)
+      return false
+    }
+    // The item finished without a failure, so the error rule waits for the next item's failure.
+    const { error: _error, ...kept } = resident
+    ticket.resident = kept
+    ticket.updatedAt = at
+    this.repo.tickets.save(ticket)
+    this.emit('ticket.idle', { ticketId, outcome, rounds: kept.rounds })
+    return true
+  }
+
   /**
    * Subscribes an open ticket to `thread` and records it in `ticket.follows` (`own` when opened by the ticket).
    * @throws UserError when the ticket is unknown or has ended.
@@ -234,14 +313,25 @@ export class Tickets extends EnginePart {
   addInput(ticket: Ticket, input: TicketInput): void {
     if (ticket.inputs.some(existing => existing.id === input.id)) return
     ticket.inputs.push(input); ticket.updatedAt = this.now()
-    // Hold back automated inputs while the worker is waiting on a person.
-    const held = liveTicket(ticket) && automatic(input) && waitsForPerson(ticket)
-    if (!held) ticket.undelivered.push(input.id)
+    // A worker waiting on a person gets no automated input; a resident ticket waiting for work keeps notes and Policy changes
+    // until a Trigger of any kind, or a status request, gives it work again.
+    const working = input.kind === 'trigger' || input.kind === 'text'
+    const idle = idleResident(ticket)
+    const waiting = liveTicket(ticket) && waitsForPerson(ticket) && automatic(input)
+    const parked = idle && !working
+    if (!waiting) ticket.undelivered.push(input.id)
+    if (working && idle) delete ticket.resident!.idleSince
     this.repo.tickets.save(ticket)
-    if (!liveTicket(ticket) || held) return
+    if (!liveTicket(ticket) || waiting || parked) return
     const running = runningAssignment(ticket), latest = latestAssignment(ticket)
     if (running) this.options.executor.deliver(ticket, running)
     else if (latest?.state === 'pending' && !waitsForPerson(ticket)) this.options.executor.start(ticket, latest)
+    // A resident ticket whose Assignment ended, as a stop outside the ticket may end it, starts a new one instead of stalling.
+    else if (idle && latest?.state === 'ended' && !waitsForPerson(ticket)) {
+      const assignment = this.newAssignment(ticket)
+      this.repo.tickets.save(ticket)
+      this.options.executor.start(ticket, assignment)
+    }
   }
   /**
    * Resume an ended ticket under its unchanged Mandate when a person's message on one of its Threads waits for it: no Eval
@@ -252,6 +342,9 @@ export class Tickets extends EnginePart {
   wake(ticketId: string): void {
     const ticket = this.repo.tickets.get(ticketId)
     if (!ticket || liveTicket(ticket) || ticket.ended?.by === 'human' || !ticket.undelivered.length) return
+    // A rotated ticket took its work as far as its cleaning rules allow: its next message opens a fresh ticket, which its
+    // handoff note gives this one's memory (see `idle`, `handoff`).
+    if (rotationOf(ticket.ended?.reason)) { this.refuse(ticket); return }
     const policy = this.policy()
     if (policy.paused) return
     if (!policy.revalidate(ticket.mandate)) { this.refuse(ticket); return }
@@ -341,8 +434,10 @@ export class Tickets extends EnginePart {
    * the person's messages it decides that its worker did not read before its latest report or turn end, the report that
    * ends the ticket included (see `readBefore`), and neither acknowledged, answered nor handed back: one may have come while
    * the worker wrote the report that ends the ticket, or after its turn ended, and either way it can no longer hand it back.
+   * `reported` marks an end the worker's own report brought, whose relay already carries the ended card, so the main Session
+   * hears of that end once (see `eventNotice`).
    */
-  end(ticketId: string, by: TicketEndBy, outcome: TicketOutcome, at = this.now(), reason?: string): void {
+  end(ticketId: string, by: TicketEndBy, outcome: TicketOutcome, at = this.now(), reason?: string, reported = false): void {
     const ticket = this.require(ticketId)
     if (!liveTicket(ticket)) return
     const stopping = ticket.assignments.filter(assignment => assignment.state !== 'ended')
@@ -358,7 +453,7 @@ export class Tickets extends EnginePart {
     for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }
     this.repo.tickets.save(ticket)
     this.letGo(ticketId, waiting, left)
-    this.emit('ticket.ended', { ticketId, by, outcome, ...why })
+    this.emit('ticket.ended', { ticketId, by, outcome, ...why, ...reported ? { reported: true } : {} })
     for (const assignment of stopping) this.options.executor.stop(ticket, assignment, reason ?? outcome)
   }
   /**

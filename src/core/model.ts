@@ -273,6 +273,24 @@ export type TicketEndBy = 'executor' | 'human'
 export type TicketOutcome = 'completed' | 'merged' | 'closed' | 'dropped' | 'stopped'
 /** A question for a person; `triggerId` is the human message that raised it, whose conversation it goes back to. */
 export interface Attention { id: string; question: string; triggerId?: string }
+/**
+ * A semi-resident ticket's bookkeeping while it stays open between work items: when its residency began, how many items it
+ * finished, when the latest one did (see `idleResident`), whether one failed since, and how full its worker's context was.
+ */
+export interface Residency {
+  /** When it became resident, or started over after a rotation; the weekly rule counts from here. */
+  since: string
+  /** Work items it finished since it became resident. */
+  rounds: number
+  /** When its latest work item finished; absent while it works. */
+  idleSince?: string
+  /** The outcome of its latest finished item. */
+  outcome?: TicketOutcome
+  /** A `blocked` or `failed` report since its latest finished item, which the error rule rotates at that item's end. */
+  error?: true
+  /** What share (0–100) of its worker model's context window its latest turn filled, when the Executor measured it. */
+  contextPercent?: number
+}
 /** Ticket aggregate: an authorized work item with its assignments, channels, thread bindings, and inputs. */
 export interface Ticket {
   id: string
@@ -283,6 +301,11 @@ export interface Ticket {
   channels: ChannelRef[]
   /** When, by whom, and how the ticket ended, with a person's or the host's reason beyond the outcome; an open ticket has none. */
   ended?: { at: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string }
+  /**
+   * Set on a semi-resident ticket, which stays open for its next work item instead of ending: its residency (see
+   * `Residency`). Its end by a cleaning rule records `rotation:<reason>` as `ended.reason`.
+   */
+  resident?: Residency
   /** Open question for a person; cleared by the executor or when the ticket ends. */
   attention?: Attention
   assignments: Assignment[]
@@ -301,6 +324,16 @@ export interface Ticket {
   updatedAt: string
   /** The Triggers it was accepted from: the one that started it, and the batch its Eval held. */
   origin: { triggerId: string; triggerIds: string[] }
+  /**
+   * The batch of work it was dispatched in, when the main Session accepted several Tickets together: their reports reach the
+   * main Session once, as one message, when the last Ticket of the batch has reported.
+   */
+  batch?: string
+  /**
+   * An urgent Ticket, dispatched with `--urgent` (an MSP payload's `urgent`): its report reaches the main Session as soon as it
+   * has one, instead of waiting for the batch's last Ticket. Its line stays in the batch's one message too.
+   */
+  urgent?: true
   /** What its Executor chose: its short name, directory and assignment text. */
   execution?: Execution
   /** The latest failed delivery of an Input to its worker, until a delivery succeeds. */

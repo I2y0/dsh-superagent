@@ -7,7 +7,6 @@ and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they ne
 """
 
 import argparse
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -19,12 +18,41 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+
+WINDOWS = os.name == 'nt'
+
+if WINDOWS:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    CREATE_NO_WINDOW = 0x08000000
+    CREATE_DETACHED = 0x00000008
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    CTRL_C_EVENT = 0
+    # Runs detached so the caller keeps its own console; it attaches to the service console and sends one Ctrl+C.
+    # It usually dies from the very Ctrl+C it delivers, so exit 2 and 3 are the only meaningful codes.
+    CTRL_RELAY = ('import ctypes,os,sys\n'
+                  'from ctypes import wintypes\n'
+                  'k=ctypes.WinDLL("kernel32",use_last_error=True)\n'
+                  'k.FreeConsole()\n'
+                  'if not k.AttachConsole(int(sys.argv[1])): os._exit(2)\n'
+                  'h=ctypes.WINFUNCTYPE(wintypes.BOOL,wintypes.DWORD)(lambda code: True)\n'
+                  'k.SetConsoleCtrlHandler(h,True)\n'
+                  'os._exit(0 if k.GenerateConsoleCtrlEvent(0,0) else 3)\n')
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+else:
+    import fcntl
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ROOT / '.artifacts'
 CONTROL = ARTIFACTS / 'control'
 KEEP_LOGS = 20
+DEFAULT_URL = 'http://127.0.0.1:3080'
+LOCK_STALE = 30
 
 
 def control(profile):
@@ -37,6 +65,141 @@ def control(profile):
 def stopped(profile):
     """Return whether `profile` was intentionally stopped."""
     return (control(profile) / 'manually-stopped').exists()
+
+
+def profile_home(profile):
+    """Return the profile directory under DSH_HOME (or ~/.dsh)."""
+    home = Path(os.environ.get('DSH_HOME') or (Path.home() / '.dsh'))
+    return home / 'profiles' / profile
+
+
+def is_web_profile(profile):
+    """Return whether `profile` came from the Web template; another template has no panel to show the bundle in."""
+    try:
+        return 'dsh-web-app' in (profile_home(profile) / 'package.json').read_text(encoding='utf-8')
+    except OSError:
+        return False
+
+
+def configured_state_dir(profile):
+    """Return the stateDir the profile patch sets, or None."""
+    try:
+        text = (profile_home(profile) / 'cordis.patch.yml').read_text(encoding='utf-8')
+    except OSError:
+        return None
+    match = re.search(r'stateDir:\s*"?([^"\n]+)"?', text)
+    return Path(match.group(1).strip()) if match else None
+
+
+def state_lock(profile):
+    """Return the `proper-lockfile` lock path (`<stateDir>.lock`, a directory), or None."""
+    directory = configured_state_dir(profile)
+    return Path(str(directory) + '.lock') if directory else None
+
+
+def log_url(profile):
+    """Return the URL the newest startup logs printed (`dsh web: http://...`), or None."""
+    logs = sorted(ARTIFACTS.glob(f'dsh-superagent-{profile}-*.log'), key=lambda path: path.stat().st_mtime)
+    for path in reversed(logs[-3:]):
+        try:
+            found = re.findall(r'dsh web:\s*(https?://\S+)', path.read_text(errors='replace'))
+        except OSError:
+            continue
+        if found:
+            return found[-1].split('/?')[0].rstrip('/')
+    return None
+
+
+def service_url(args):
+    """Resolve the health URL: the flag, the recorded one, the one dsh printed, then the template default."""
+    if args.url:
+        return args.url.rstrip('/')
+    try:
+        recorded = (control(args.profile) / 'url.txt').read_text().strip()
+    except OSError:
+        recorded = ''
+    return recorded or log_url(args.profile) or DEFAULT_URL
+
+
+def wait_for_state_lock(profile, timeout=45):
+    """Wait out the lock a killed instance left: `runtime.ts` calls it stale after 30 s and `lockSync` cannot retry."""
+    lock = state_lock(profile)
+    if lock is None or not lock.exists():
+        return
+    deadline = time.monotonic() + timeout
+    announced = False
+    while time.monotonic() < deadline:
+        if not lock.exists():
+            return
+        age = time.time() - lock.stat().st_mtime
+        if age >= LOCK_STALE:
+            return
+        if not announced:
+            print(f'state lock is still fresh; waiting {int(LOCK_STALE - age)}s for the previous instance to go stale.', flush=True)
+            announced = True
+        time.sleep(1)
+    raise RuntimeError(f'state directory is still locked: {lock}. Delete that directory if a killed instance left it, otherwise stop first.')
+
+
+def lock_operation(handle):
+    """Take the exclusive operation lock without waiting (`flock` on POSIX, `msvcrt.locking` on Windows)."""
+    if WINDOWS:
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            raise BlockingIOError('operation in progress') from None
+    else:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def alive(pid):
+    """Return whether `pid` names a running Windows process; a reused PID is caught by the caller's image-name check."""
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def interrupt(pid, profile):
+    """Ask the service to shut down gracefully: SIGINT on POSIX, a console Ctrl+C on Windows."""
+    if not WINDOWS:
+        os.kill(pid, signal.SIGINT)
+        return
+    relay = subprocess.run([sys.executable, '-c', CTRL_RELAY, str(pid)],
+                           capture_output=True, creationflags=CREATE_DETACHED)
+    # A relay that delivered the signal is usually killed by it (0xC000013A); only its own failure codes are meaningful.
+    if relay.returncode == 2:
+        raise RuntimeError(f'PID {pid} has no console to receive Ctrl+C; stop it from Task Manager.')
+    if relay.returncode == 3:
+        raise RuntimeError(f'Ctrl+C could not be queued for PID {pid}; stop it from Task Manager.')
+
+
+def dsh_launcher():
+    """Return `(executable, leading arguments)` that run the DSH CLI without a shell."""
+    dsh = shutil.which('dsh')
+    if not dsh:
+        raise RuntimeError('dsh must be on PATH.')
+    if not WINDOWS:
+        return dsh, []
+    node = shutil.which('node')
+    if not node:
+        raise RuntimeError('node must be on PATH.')
+    if dsh.lower().endswith(('.cmd', '.bat')):
+        # An npm .cmd shim runs `node <dp0>\node_modules\...\bin.js %*`: start node itself so the recorded PID is the service.
+        text = Path(dsh).read_text(errors='replace')
+        match = re.search(r'"%dp0%\\([^"]+\.js)"', text)
+        entry = Path(dsh).parent / match.group(1).replace('\\', os.sep) if match else None
+        if match and entry and entry.exists():
+            return node, [str(entry)]
+        raise RuntimeError(f'Cannot find the DSH entry script behind {dsh}.')
+    return dsh, []
 
 
 def serves(args, profile):
@@ -68,8 +231,53 @@ def running(pid, profile):
     return any(found == pid and name in ('node', 'dsh') and serves(args, profile) for found, name, args in ps('-p', str(pid)))
 
 
-def processes(profile):
-    """Return PIDs of all running DSH service processes for `profile`, including instances started outside this script and the recorded `service.pid` while still running."""
+def port_of(url):
+    """Return the port of `url`, or None."""
+    try:
+        return urllib.parse.urlsplit(url).port or 80
+    except ValueError:
+        return None
+
+
+def windows_pid_on(port):
+    """Return the PID of the node process listening on `port`, or None (Windows has no `ps`, so `netstat` plus `tasklist`)."""
+    if not WINDOWS or not port:
+        return None
+    try:
+        rows = subprocess.run(['netstat', '-ano', '-p', 'tcp'], capture_output=True, text=True).stdout.splitlines()
+    except OSError:
+        return None
+    for row in rows:
+        fields = row.split()
+        if len(fields) < 5 or fields[3] != 'LISTENING' or not fields[4].isdigit():
+            continue
+        if fields[1].rsplit(':', 1)[-1] != str(port):
+            continue
+        try:
+            image = subprocess.run(['tasklist', '/FI', 'PID eq ' + fields[4], '/FO', 'CSV', '/NH'],
+                                   capture_output=True, text=True).stdout.strip().lower()
+        except OSError:
+            return None
+        return int(fields[4]) if image.startswith('"node.exe"') or image.startswith('"dsh.exe"') else None
+    return None
+
+
+def processes(profile, url=None):
+    """Return PIDs of all running DSH service processes for `profile`, including instances started outside this script."""
+    if WINDOWS:
+        # No `ps` to scan: the service.pid this script wrote, or the listener of one it did not start.
+        try:
+            pid = int((control(profile) / 'service.pid').read_text())
+        except (OSError, ValueError):
+            pid = None
+        if pid and alive(pid):
+            return [pid]
+        # Adopt a listener only when its management API answers, so a foreign program on the same port is not mistaken for the service.
+        if url and state(url) is not None:
+            found = windows_pid_on(port_of(url))
+            if found:
+                return [found]
+        return []
     found = [pid for pid, name, args in ps('-ax', check=True) if name in ('node', 'dsh') and serves(args, profile)]
     try:
         pid = int((control(profile) / 'service.pid').read_text())
@@ -120,7 +328,8 @@ def outcome(pids, current):
 
 
 def status(args):
-    pids = processes(args.profile)
+    args.url = service_url(args)
+    pids = processes(args.profile, args.url)
     current = state(args.url) if pids else None
     print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': args.url,
                       'manually_stopped': stopped(args.profile), 'health': current and current['health'],
@@ -131,16 +340,17 @@ def status(args):
 
 def stop(args, intentional=True):
     """Stop the service gracefully, recording a manual stop marker when `intentional` is True."""
-    pids = processes(args.profile)
+    args.url = service_url(args)
+    pids = processes(args.profile, args.url)
     if len(pids) > 1:
         raise RuntimeError('Multiple dsh-superagent processes found; refusing to choose one.')
     # Write the stop marker before waiting so monitors respect the intentional stop even if graceful shutdown times out.
     if intentional:
         (control(args.profile) / 'manually-stopped').write_text(time.strftime('%Y-%m-%dT%H:%M:%S%z') + '\n')
     for pid in pids:
-        os.kill(pid, signal.SIGINT)
+        interrupt(pid, args.profile)
     deadline = time.monotonic() + args.stop_timeout
-    while any(running(pid, args.profile) for pid in pids):
+    while any(alive(pid) if WINDOWS else running(pid, args.profile) for pid in pids):
         if time.monotonic() >= deadline:
             raise RuntimeError('Graceful stop timed out; no forced kill was sent. Check status.')
         time.sleep(0.5)
@@ -158,31 +368,59 @@ def prune_logs(profile):
 
 def start(args):
     session = 'dsh-' + args.profile
-    pids = processes(args.profile)
+    args.url = service_url(args)
+    pids = processes(args.profile, args.url)
     if len(pids) > 1:
         raise RuntimeError('Multiple dsh-superagent processes found; refusing to start another.')
     if not pids:
-        dsh = shutil.which('dsh')
-        if not dsh or not shutil.which('tmux'):
-            raise RuntimeError('Both dsh and tmux must be on PATH.')
-        exists = subprocess.run(['tmux', 'has-session', '-t', '=' + session],
-                                capture_output=True).returncode == 0
+        executable, prefix = dsh_launcher()
+        exists = False
+        if not WINDOWS:
+            if not shutil.which('tmux'):
+                raise RuntimeError('tmux must be on PATH.')
+            exists = subprocess.run(['tmux', 'has-session', '-t', '=' + session],
+                                    capture_output=True).returncode == 0
         if state(args.url) is not None:
             raise RuntimeError('An existing orchestrator answers at this URL; refusing duplicate startup.')
+        wait_for_state_lock(args.profile)
         stamp = time.strftime('%Y%m%d-%H%M%S')
         log = ARTIFACTS / f'dsh-superagent-{args.profile}-{stamp}-{os.getpid()}.log'
         log.touch()
         prune_logs(args.profile)
-        # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
-        command = ('umask 077; exec ' + shlex.join([dsh, '--profile', args.profile, '--no-open'])
-                   + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
-        # Reuse an existing tmux session without disturbing other windows.
-        target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
-        pane = subprocess.run(['tmux', *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(ROOT), command],
-                              check=True, capture_output=True, text=True).stdout.strip()
-        if pane.isdigit():
-            (control(args.profile) / 'service.pid').write_text(pane + '\n')
+        if WINDOWS:
+            # A hidden console keeps Ctrl+C deliverable later, and leaves no tmux dependency.
+            with log.open('ab') as sink:
+                child = subprocess.Popen([executable, *prefix, '--profile', args.profile, '--no-open'],
+                                         cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=sink,
+                                         stderr=subprocess.STDOUT, close_fds=True,
+                                         creationflags=CREATE_NO_WINDOW)
+            (control(args.profile) / 'service.pid').write_text(f'{child.pid}\n')
+        else:
+            # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
+            command = ('umask 077; exec ' + shlex.join([executable, '--profile', args.profile, '--no-open'])
+                       + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
+            # Reuse an existing tmux session without disturbing other windows.
+            target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
+            pane = subprocess.run(['tmux', *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(ROOT), command],
+                                  check=True, capture_output=True, text=True).stdout.strip()
+            if pane.isdigit():
+                (control(args.profile) / 'service.pid').write_text(pane + '\n')
         print('Log: ' + str(log), flush=True)
+        discovered = None
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            try:
+                found = re.findall(r'dsh web:\s*(https?://\S+)', log.read_text(errors='replace'))
+            except OSError:
+                found = []
+            if found:
+                discovered = found[-1].split('/?')[0].rstrip('/')
+                break
+            time.sleep(0.5)
+        if discovered:
+            (control(args.profile) / 'url.txt').write_text(discovered + '\n')
+            args.url = discovered
+            print('URL: ' + discovered, flush=True)
     else:
         (control(args.profile) / 'service.pid').write_text(f'{pids[0]}\n')
         print(f'dsh-superagent already running (PID {pids[0]}); no duplicate started.', flush=True)
@@ -200,18 +438,89 @@ def start(args):
                 print('Fix it on the Feishu card of the Source settings.')
             for name, detail in part_errors(current).items():
                 print(f'{name} reports an error, which a restart does not fix: {detail}')
+            print('Panel: ' + args.url + '/  (sidebar -> Superagent)', flush=True)
             return code
         time.sleep(1)
     status(args)
     raise RuntimeError('Startup health check timed out; inspect the log. Any running process was left intact.')
 
 
+def seed_policy(url=None):
+    """Ensure the one rule this fork needs: local MSP events are admissible when an experience covers them."""
+    base = (url or DEFAULT_URL).rstrip('/')
+    url = os.environ.get('DSH_SUPERAGENT_API') or base + '/orchestrator/api'
+    import json, urllib.request
+    def call(method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(url + path, data=data, method=method,
+            headers={'x-orchestrator-request': '1', 'content-type': 'application/json'})
+        with urllib.request.urlopen(request, timeout=25) as response:
+            return json.load(response)
+    settings = call('GET', '/settings')
+    block = settings['blocks']['policy']
+    value = block['value']
+    if any(rule.get('id') == 'msp-local' for rule in value.get('rules', [])):
+        return
+    value.setdefault('rules', []).append({
+        'id': 'msp-local',
+        'name': 'Local MSP events',
+        'enabled': True,
+        'instruction': 'Any event from the local MSP source is in scope for assessment. ' 
+            'When the Trigger carries an experience block, follow it by its trust level. ' 
+            'An event that no experience covers is not admissible.',
+    })
+    call('PUT', '/settings/policy', {'value': value, 'revision': block.get('revision', 0)})
+    print('seeded policy rule msp-local')
+
+
+def init(args):
+    """Create the profile, install this bundle into it, and write the required stateDir."""
+    # Windows 上 which('dsh') 可能返回 .ps1 或 shell 脚本，subprocess 都执行不了；
+    # 优先拿 .cmd / .exe。
+    dsh = shutil.which('dsh.cmd') or shutil.which('dsh.exe') or shutil.which('dsh')
+    if not dsh:
+        raise RuntimeError(
+            'dsh is not on PATH. Install it first: '
+            'npm install -g @deepseek-ai/dsh@0.2.1-rc.3')
+    home = Path(os.environ.get('DSH_HOME') or (Path.home() / '.dsh'))
+    patch = home / 'profiles' / args.profile / 'cordis.patch.yml'
+    state = home / 'state' / args.profile
+    if not patch.parent.exists():
+        print('creating profile ' + args.profile + ' from the Web template')
+        subprocess.run([dsh, 'superagent', '--from-default-profile', 'web', '--dump-config'],
+                       stdout=subprocess.DEVNULL, check=True)
+    elif not is_web_profile(args.profile):
+        raise RuntimeError(f'profile {args.profile} was not created from the Web template (no @deepseek-ai/dsh-web-app in its '
+                           'package.json), so the sidebar will never show the bundle; use another --profile, or back it up and delete it.')
+    print('installing ' + str(ROOT) + ' into profile ' + args.profile)
+    subprocess.run([dsh, 'plugin', '--profile', args.profile, 'add', 'link:' + str(ROOT)], check=True)
+    text = patch.read_text(encoding='utf-8') if patch.exists() else ''
+    # 新建的 profile 里这个文件是注释 + 一个空的 `[]`。直接追加会让两个 YAML 文档粘在一起，
+    # 解析器报 "document separator is expected"。先把 `[]` 摘掉。
+    if text.strip().splitlines() and text.strip().splitlines()[-1].strip() == '[]':
+        text = chr(10).join(text.strip().splitlines()[:-1]) + chr(10)
+    if 'stateDir' not in text:
+        state.mkdir(parents=True, exist_ok=True)
+        patch.parent.mkdir(parents=True, exist_ok=True)
+        state_dir = str(state).replace(os.sep, '/')
+        line = '\n- id: dsh-superagent\n  config:\n    stateDir: "'
+        patch.write_text(text.rstrip() + line + state_dir + '"\n', encoding='utf-8')
+        print('wrote stateDir: ' + state_dir)
+    code = start(args)
+    if code == 0:
+        try:
+            seed_policy(args.url)
+        except Exception as error:
+            print('could not seed the msp-local rule: ' + str(error))
+    return code
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['start', 'stop', 'restart', 'status'])
+    parser.add_argument('action', choices=['init', 'start', 'stop', 'restart', 'status'])
     parser.add_argument('--profile', default=os.environ.get('DSH_SUPERAGENT_PROFILE') or 'superagent',
                         help='DSH profile that loads dsh-superagent; its tmux session is dsh-<profile>.')
-    parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or 'http://127.0.0.1:3082',
+    parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL'),
                         help='Health-check URL; override after changing the profile port.')
     parser.add_argument('--timeout', type=float, default=60, help='Startup timeout in seconds.')
     parser.add_argument('--stop-timeout', type=float, default=300,
@@ -226,12 +535,14 @@ def main():
     os.umask(0o077)
     with (control(args.profile) / 'operation.lock').open('a') as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_operation(lock)
         except BlockingIOError:
             raise RuntimeError('Another dsh-superagent control operation is in progress.') from None
         if args.respect_stop and args.action in ('start', 'restart') and stopped(args.profile):
             print('Intentional stop is active; automatic recovery skipped.')
             return 0
+        if args.action == 'init':
+            return init(args)
         if args.action == 'status':
             return status(args)
         if args.action in ('stop', 'restart'):

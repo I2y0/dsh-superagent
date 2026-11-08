@@ -130,6 +130,8 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
   // Setup restarts dsh-superagent once it resolves the accounts; until then nothing is polled.
   if (!ctx.configured()) { ctx.report('github', health('paused', 'setupPending')); return }
+  // Without a repository there is nothing to read: stay paused instead of failing every poll with an empty CLI.
+  if (!ctx.deployment.repository) { ctx.report('github', health('paused', 'repositoryUnset')); return }
   while (!signal.aborted) {
     const config = ctx.config<GithubConfig>(SOURCE)
     try {
@@ -146,11 +148,11 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
 }
 interface Round {
   started: string; signal?: AbortSignal | undefined
-  pulls: Map<number, Promise<Pull>>; read: Set<number>; failures: string[]; dropped: number[]; abandoned: number[]
+  pulls: Map<number, Promise<Pull>>; read: Set<number>; failures: string[]; dropped: number[]; abandoned: number[]; own: number
   tally: Tally
 }
 const newRound = (signal?: AbortSignal): Round => ({ started: new Date().toISOString(), signal, pulls: new Map(), read: new Set(),
-  failures: [], dropped: [], abandoned: [], tally: { skipped: 0 } })
+  failures: [], dropped: [], abandoned: [], own: 0, tally: { skipped: 0 } })
 const stopped = (ctx: SourceContext, round: Round): boolean => !!round.signal?.aborted || !ctx.config(SOURCE)
 export interface Retry { since: string; pr: boolean; failedAt?: string; attempts?: number }
 const RETRY_WINDOW_MS = 24 * 3600_000
@@ -224,7 +226,7 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
   for (const item of items) {
     // Stopping mid-stream aborts before advancing the cursor so unread items are retried.
     if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
-    if (sameName(item.user.login, login)) continue
+    if (sameName(item.user.login, login)) { round.own += 1; continue }
     if (id === 'issues') {
       const issue = IssueSchema.safeParse(item)
       const pr = issue.success && !!issue.data.pull_request
@@ -288,10 +290,13 @@ export async function pollRound(ctx: SourceContext, signal?: AbortSignal): Promi
   if (signal?.aborted) return interval
   if (round.failures.length) throw new Error(`${round.failures.length} GitHub reads failed: ${round.failures.slice(0, 3).join('; ')}`)
   const named = (numbers: number[]) => [...new Set(numbers)].sort((a, b) => a - b).map(number => `#${number}`).join(', ')
+  // A deployment that posts its requests as the agent account is a Source that only reads its own events: report that
+  // instead of reporting an empty round as ready, so the operator can tell it from a repository with no activity.
+  const own = round.own ? `; ${round.own} from @${ctx.deployment.github.login} (the agent's own account) ignored` : ''
   const dropped = (round.dropped.length ? `; deleted on GitHub: ${named(round.dropped)}` : '')
     + (round.abandoned.length ? `; dropped after their reads kept failing: ${named(round.abandoned)}` : '')
     + (round.tally.skipped ? `; ${round.tally.skipped} unreadable items skipped` : '')
-  ctx.report('github', { state: 'ready', detail: `${count} notifications; next poll ≥ ${interval}s${dropped}`, at: round.started })
+  ctx.report('github', { state: 'ready', detail: `${count} notifications; next poll ≥ ${interval}s${own}${dropped}`, at: round.started })
   return interval
 }
 /** Reads notifications since the cursor and each Issue or PR they name, advancing the cursor atomically with the retry map for failed reads; deleted (410) Issues are dropped once their error is recorded. */
@@ -394,7 +399,7 @@ async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, r
       if (stopped(ctx, round)) throw new Error('The GitHub Source stopped during the poll')
       const timestamp = Date.parse(comment.updated_at ?? comment.submitted_at ?? comment.created_at ?? '')
       if (!Number.isFinite(timestamp) || timestamp < Date.parse(since)) continue
-      if (sameName(comment.user.login, login)) continue
+      if (sameName(comment.user.login, login)) { round.own += 1; continue }
       // A review decision without a body still reaches the ticket: a worker may be waiting for that approval.
       const trigger = commentTrigger(comment, ref, kind, login)
       if (trigger.text) await ctx.receive(trigger)

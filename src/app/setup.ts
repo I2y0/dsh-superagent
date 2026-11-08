@@ -88,12 +88,17 @@ export class Setup {
       if (error instanceof SetupError) throw error
       throw new SetupError('environmentFailed', { output: error instanceof Error ? error.message : String(error) })
     }
-    await writeEnvironment(resolved, settings.executor.blockedCommands).catch(machineProblem)
-    this.restoreEnvironment = applyEnvironment(this.variables, machine.stateDir, this.path)
-    await verifyEnvironment(resolved, context.subprocess, lifetime).catch((error: unknown) => {
-      this.restore()
-      machineProblem(error)
-    })
+    // The worker shims and the isolated git configuration exist for Executor Sessions, which need an agent CLI. Without
+    // one (no repository yet), applying them would only rewrite this host process's PATH and git config for nothing —
+    // and a credential helper with no CLI in it makes every `git push` in every session of this process fail.
+    if (resolved.github.cli) {
+      await writeEnvironment(resolved, settings.executor.blockedCommands).catch(machineProblem)
+      this.restoreEnvironment = applyEnvironment(this.variables, machine.stateDir, this.path)
+      await verifyEnvironment(resolved, context.subprocess, lifetime).catch((error: unknown) => {
+        this.restore()
+        machineProblem(error)
+      })
+    }
     return resolved
   }
 }

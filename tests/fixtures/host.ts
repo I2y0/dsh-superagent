@@ -3,7 +3,7 @@
  * allowed member Alice (`ou_alice`), listened chat `oc_team`, and `auto` eval mode. Stop it with `stop()`.
  */
 import { Context } from '@deepseek-ai/cordis'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { vi, type Mock } from 'vitest'
@@ -20,6 +20,12 @@ import { testMachine } from './deployment.ts'
 
 export const MEMBER = 'ou_alice'
 export const CHAT = 'oc_team'
+
+/** Writes the ticket's `lessons.md`, as a worker following the closing standard does before the report that ends its work. */
+export function seedLessons(directory: string): void {
+  mkdirSync(directory, { recursive: true })
+  writeFileSync(join(directory, 'lessons.md'), '无\n')
+}
 
 /** Build a Feishu mention trigger from Alice in `oc_team`, using the digits in `id` as the timestamp offset in seconds. */
 export function feishu(id: string, text: string, overrides: Record<string, unknown> = {}): Trigger {
@@ -271,6 +277,10 @@ export async function startRuntime(seed?: (store: Store) => void) {
   async function route(item: Record<string, unknown>): Promise<Record<string, unknown>> {
     const { results } = await runTool(runtime.masterId, 'orchestrator_route', { decisions: [item] }) as { results: Record<string, unknown>[] }
     if (results[0]!.refused) throw new Error(String(results[0]!.refused))
+    // An accepted ticket's worker keeps its lessons file, which its final report is checked against.
+    const accepted = (results[0] as { ticket?: { ticket_id: string } }).ticket
+    const directory = accepted && runtime.store.tickets.get(accepted.ticket_id)?.execution?.directory
+    if (directory) seedLessons(directory)
     return results[0]!
   }
   async function acceptedTicket(trigger: Trigger) {

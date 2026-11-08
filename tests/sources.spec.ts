@@ -1244,6 +1244,22 @@ describe('observing the GitHub repository', () => {
     expect(h.store.get('github-stream:issues')).toBeUndefined()
     h.store.close()
   })
+  it("reports the events it ignores as the agent's own, so a single-account deployment is not silent", async () => {
+    const h = host()
+    observe(h, { observeIssues: true, observeComments: true })
+    h.store.set('github-since', at(-24))
+    const kind = (stream: string) => stream === 'issues' ? 'issues' : 'comments'
+    for (const stream of ['issues', 'comments', 'review-comments']) h.store.set('github-stream:' + stream, { since: at(0), started: { [kind(stream)]: at(0) } })
+    const mine = { login: 'agent-bot', type: 'User' }
+    repository(h, { issues: [issue(6, { created_at: at(2), updated_at: at(2), user: mine })],
+      comments: [{ id: 1, body: 'my own reply', user: mine, created_at: at(2), updated_at: at(2),
+        issue_url: 'https://api.github.com/repos/acme/widgets/issues/6', html_url: 'https://github.com/acme/widgets/issues/6#issuecomment-1' }] })
+    await pollRound(h)
+    expect(h.receive).not.toHaveBeenCalled()
+    expect(h.health.github).toMatchObject({ state: 'ready',
+      detail: "0 notifications; next poll ≥ 60s; 2 from @agent-bot (the agent's own account) ignored" })
+    h.store.close()
+  })
   it('takes in the repository\'s conversation and review comments, on the Issue or PR each is on', async () => {
     const h = host()
     observe(h, { observeComments: true })

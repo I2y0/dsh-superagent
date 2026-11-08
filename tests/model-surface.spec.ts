@@ -23,6 +23,7 @@ import { SettingsSchema } from '../src/policy.ts'
 import { feishuKind, feishuTrigger } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
 import { testMachine } from './fixtures/deployment.ts'
+import { seedLessons } from './fixtures/host.ts'
 
 type Role = 'orchestrator' | 'worker'
 interface Surface { where: string; owner: string; role: Role | 'both'; text: string }
@@ -170,6 +171,7 @@ async function drive(host: Host) {
   expect(routed.results.map(result => result.decision)).toEqual(['accept', 'ignore', 'ignore'])
   expect(routed.results[2]!.reason).toMatch(/^Ignored from its card/)
   const a = routed.results[0]!.ticket!.ticket_id
+  seedLessons(runtime.store.tickets.get(a)!.execution!.directory)
   const answer = { trigger_id: request.id, purpose: 'answer', text: '是配置。' }
   const refusal = await run(master, 'orchestrator_reply', answer).then(() => '', (error: Error) => error.message)
   const proposal = feishu('5', '把副标题改成“浏览网页”', { mentions: [] })
@@ -178,9 +180,19 @@ async function drive(host: Host) {
   await run(master, 'orchestrator_eval', { trigger_id: proposal.id })
   const proactive = (await run(master, 'orchestrator_eval_decide', { trigger_id: proposal.id, decision: 'accept', title: '文案修订', worktree_name: 'copy-fix',
     scope: '改副标题', reason: 'explicit copy change', intent_evidence: 'quoted', acknowledgement: '收到，把副标题改成“浏览网页”。',
-    rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'copy change' }, { rule_id: 'visual', matched: false, reason: 'not visual' }],
+    rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'copy change' }, { rule_id: 'visual', matched: false, reason: 'not visual' },
+      { rule_id: 'msp-local', matched: false, reason: 'not a local signal' }],
     direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'it names the text' } })).ticket as { ticket_id: string }
   const b = proactive.ticket_id
+  seedLessons(runtime.store.tickets.get(b)!.execution!.directory)
+  await runtime.idle()
+  // A person's stop ends a ticket that no report ended, which the main Session hears about in a `ticket_ended` notice.
+  const spare = feishu('10', '@bot 这个先不做了')
+  await runtime.receive(spare)
+  const stopped = ((await run(master, 'orchestrator_route', { decisions: [
+    { kind: 'accept', trigger_id: spare.id, title: '暂缓', worktree_name: 'paused', acknowledgement: '收到，先不做。' }] })) as
+    { results: { ticket?: { ticket_id: string } }[] }).results[0]!.ticket!.ticket_id
+  runtime.engine.stopTicket(stopped)
   await runtime.idle()
   const [workerA, workerB] = [a, b].map(workerSessionId) as [string, string]
   await run(workerA, 'orchestrator_report', { state: 'progress', summary: 'Needs a decision.', human_action: 'Desktop too?' })
@@ -206,7 +218,8 @@ async function drive(host: Host) {
   })
   const policy = runtime.store.settings().policy
   // The rule ticket b was accepted under changes, so its worker is told how; the one it was not is disabled, which tells no one.
-  const rules = policy.rules.map(rule => rule.id === 'visual' ? { ...rule, enabled: false }
+  // Leave one enabled rule (copy) so the Policy section's rendering is unambiguous.
+  const rules = policy.rules.map(rule => rule.id === 'visual' || rule.id === 'msp-local' ? { ...rule, enabled: false }
     : rule.id === 'copy' ? { ...rule, instruction: `${rule.instruction} Keep the wording short.` } : rule)
   await runtime.settings.save('policy', { ...policy, rules }, runtime.store.blockRevision('policy'), 'panel')
   // Worker b's turn ends: it is idle, as DSH says when it emits the event.

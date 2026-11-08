@@ -11,6 +11,8 @@ import type { Store } from './store.ts'
 export interface EffectPayloads {
   /** Build an Eval's candidate card and relay it to the main Session; the key is the Eval ID. */
   assessment: { triggerId: string }
+  /** Decide an Eval under the deployment's auto-route rules instead of relaying its card; the key is the Eval ID. */
+  route: { triggerId: string }
   /** Launch a pending Assignment; the key is the Assignment ID. */
   launch: { ticketId: string; assignmentId: string }
   /** Hand a ticket's waiting Inputs to its running Assignment; the key is the Ticket ID. */

@@ -254,7 +254,8 @@ describe('settings migration', () => {
       sources: { feishu: feishuSource({ chats: [{ chatId: CHAT, listen: 'mentions' }, { chatId: OBSERVED, listen: 'all' }], directMessages: false }), github: { enabled: true, config: { pollSeconds: 120 } } },
       policy: { rules: [], sources: { feishu: { allowed: [{ id: MEMBER, name: 'A' }], admission: {} }, github: { allowed: [{ id: 'a' }], admission: {} } } },
       eval: { mode: 'auto', timeoutSeconds: 90, model: { provider: 'p', model: 'm' } },
-      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [] },
+      executor: { model: null, maxWorkers: 5, directory: '', prepare: '', blockedCommands: [],
+        resident: { enabled: false, maxRounds: 10, maxContextPercent: 80, weekly: true, onError: true, onScenarioChange: true } },
     })
     expect(migrateSettings(migrated)).toEqual(migrated)
   })
@@ -482,5 +483,21 @@ describe('bots and events without a sender', () => {
       ['pulls', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['comments', { listedUnaddressed: false, unlistedAddressed: true, unlistedUnaddressed: false }],
       ['ci', { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: false }]])
+  })
+})
+
+describe('fresh installation', () => {
+  it('is usable with no configuration: local MSP events are admitted, an experience rule exists, and accept mode acts', () => {
+    const settings = SettingsSchema.parse({})
+    expect(settings.eval.mode).toBe('auto')
+    expect(settings.policy.rules.map(rule => rule.id)).toContain('msp-local')
+    expect(settings.policy.sources.msp?.admission.ambient).toEqual({ unlistedUnaddressed: 'inferred' })
+    // The msp kind's scope(): in scope, observed, admission row `ambient`.
+    const scope = { scope: () => ({ listened: true, observed: true, row: 'ambient' }) }
+    const policy = settingsPolicy(settings, scope as never)
+    const trigger = { source: 'msp', actor: { source: 'msp', id: '' }, human: false, meta: {},
+      text: 'weather.changed\n{"delta":-6}' } as Trigger
+    expect(policy.gate(trigger, { subscriptions: [], context: [] } as unknown as Thread, []))
+      .toMatchObject({ admissible: true, strength: 'inferred' })
   })
 })

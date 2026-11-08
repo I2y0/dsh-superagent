@@ -1,6 +1,7 @@
 /** Plugin configuration and startup verification for repository access and agent CLI identities. */
 import { LIMITS } from './limits.ts'
 import { accessSync, constants, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
@@ -10,10 +11,15 @@ import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra
 import { SetupError } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
-const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
+const absolute = (description: string) => s.string().pattern(/^(\/|[A-Za-z]:[\/])/).description(`${description} Absolute path (POSIX or a Windows drive path).`)
+/**
+ * Default state directory under the harness home, so a bundle installed from the plugin manager mounts without any
+ * configuration; `DSH_HOME` relocates it, and a profile that sets `stateDir` still wins over this default.
+ */
+const defaultStateDir = (): string => join(process.env.DSH_HOME?.trim() || join(homedir(), '.dsh'), 'state', 'superagent').replaceAll('\\', '/')
 /** Plugin configuration of the dsh-superagent entry. Volatile fields apply without a restart because dsh-superagent reads them on each use; changing `stateDir` remounts the plugin. */
 export const Config = s.object({
-  stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.').required(),
+  stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.').default(defaultStateDir()),
   promptMaxChars: s.number().min(LIMITS.promptMaxChars.min).max(LIMITS.promptMaxChars.max).step(1).default(100000)
     .description('Largest saved prompt configuration, in characters.').volatile(),
   admissionContextMaxPages: s.number().min(LIMITS.admissionContextMaxPages.min).max(LIMITS.admissionContextMaxPages.max).step(1).default(10)
@@ -72,6 +78,10 @@ export type Probe = (argv: string[]) => Promise<string>
 /** Run startup checks through DSH's worker subprocess service with worker shims removed from PATH so a `gh` wrapper script reaches the real binary. */
 export function workerProbe(subprocess: SubprocessRuntime, stateDir: string, cwd: string, signal: AbortSignal): Probe {
   const path = withoutDirectory(process.env.PATH ?? '', workerBin(stateDir))
+  const run = (argv: string[]): ReturnType<typeof runAsWorker> =>
+    runAsWorker(subprocess, argv, cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]), { PATH: path })
+  // Windows 没有 `env` 这个可执行文件：直接把 PATH 交给子进程，而不是用 `env PATH=...`。
+  if (process.platform === 'win32') return run
   return argv => runAsWorker(subprocess, ['env', `PATH=${path}`, ...argv], cwd, AbortSignal.any([signal, AbortSignal.timeout(60_000)]))
 }
 
@@ -88,7 +98,11 @@ export async function resolveDeployment(machine: Machine, github: unknown, probe
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
   const remote = accounts.repository
-  if (!remote) throw new SetupError('repositoryUnset')
+  if (!remote) {
+    // 没有配置仓库时不再让整个部署检查失败：本机 MSP 信号与 GitHub 无关，
+    // 只把 GitHub 相关的字段留空，由各 Source 自己报告「未配置」。
+    return { ...machine, repository: '', github: { cli: '', login: '', noreply: '' } }
+  }
   if (!accounts.cli) throw new SetupError('agentCliUnset')
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }

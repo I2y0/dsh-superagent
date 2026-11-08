@@ -1,6 +1,6 @@
 /** Formats background notices and steering relays delivered to the main Session via the effect queue. */
 import { randomUUID } from 'node:crypto'
-import { followupOwners, key, liveTicket, type DomainEvent, type Ticket, type WorkerReport } from '../core/index.ts'
+import { followupOwners, key, latestReport, liveTicket, type DomainEvent, type Ticket, type WorkerReport } from '../core/index.ts'
 import { triggerMessage } from '../executor/dsh.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { repliedTo } from './links.ts'
@@ -43,11 +43,15 @@ export const subscriptionNotice = (thread: string, at?: string): Notice => [`sub
 
 /**
  * Converts an unsolicited domain event into a main-Session notice (`ticket.ended`, `trigger.requeued`, or
- * `thread.unsubscribed` by a person or executor); returns `undefined` for events that require no notice.
+ * `thread.unsubscribed` by a person or executor); returns `undefined` for events that require no notice, including a ticket
+ * end that its worker's report already carried.
  */
 export function eventNotice(event: DomainEvent, ticket: (id: string) => Ticket | undefined = () => undefined): Notice | undefined {
   const { at } = event
   if (event.type === 'ticket.ended') {
+    // The report that ends a ticket relays its card with `ended`, so a notice would tell the main Session about the same end a
+    // second time; only an end no report announced, such as a person's stop or a merged pull request, is a notice of its own.
+    if (event.data.reported) return undefined
     const { ticketId, by, outcome, reason = outcome } = event.data
     const ended = ticket(ticketId)
     return receiptNotice(ended ? { ticket_ended: brief(ended) } : { ticket_ended: ticketId, by, outcome, reason, at }, `Ticket ${ticketId} ended (${reason})`)
@@ -103,6 +107,47 @@ export function followupRelay(message: { trigger_id: string },
   tickets: readonly { ticket_id: string; title: string; state: string; context?: boolean }[]): Relay {
   return { id: `followup:${message.trigger_id}`, text: JSON.stringify({ kind: 'follow_up', ...message, delivered_to: tickets,
     note: FOLLOWUP_NOTE }) }
+}
+/** Characters of a batch Ticket's report kept in its one-line result. */
+const BATCH_RESULT_CHARS = 240
+/**
+ * Whether a Ticket has said its latest word: it ended, or its latest report is not `progress`. A batch waits for every Ticket
+ * in it to reach this before the main Session hears of the batch.
+ */
+export const reported = (ticket: Ticket): boolean => !!ticket.ended || (latestReport(ticket)?.state ?? 'progress') !== 'progress'
+/** The Tickets of one dispatch batch, oldest first, as `batch` names them in a list the Store keeps newest first. */
+export const batchMembers = (tickets: readonly Ticket[], batch: string): Ticket[] =>
+  tickets.filter(ticket => ticket.batch === batch).reverse().sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+/** One line of a batch's message: a Ticket's card state and the start of its latest report, whole behind `ticket/<id>/result`. */
+const batchLine = (ticket: Ticket) => ({ ticket_id: ticket.id, title: ticket.title, state: ticketCard(ticket).state,
+  result: (latestReport(ticket)?.summary ?? '').replace(/\s+/g, ' ').trim().slice(0, BATCH_RESULT_CHARS), read: `ticket/${ticket.id}/result` })
+/**
+ * Builds the one message a dispatch batch sends the main Session once every Ticket in it has reported: the batch's Tickets,
+ * oldest first, each with its state and one line of its result. Returns undefined for a Ticket outside a batch, for a batch
+ * still waiting on a Ticket, and for a batch of one, whose report goes out on its own.
+ */
+export function batchRelay(store: Pick<Store, 'tickets'>, ticket: Ticket): Relay | undefined {
+  const batch = ticket.batch
+  if (!batch || !reported(ticket)) return undefined
+  const members = batchMembers(store.tickets.list(), batch)
+  if (members.length < 2 || members.some(member => !reported(member))) return undefined
+  const at = members.map(member => member.ended?.at ?? latestReport(member)?.at ?? '').sort().at(-1) ?? ''
+  return { id: `batch:${batch}:${key(at)}`, text: JSON.stringify({ kind: 'batch_report', batch, tickets: members.map(batchLine),
+    note: 'Every Ticket of this batch has reported; each line starts its latest report, and ticket/<id>/result holds the whole one.' }) }
+}
+/**
+ * What the main Session hears of a worker's report: a result at once for a Ticket outside a batch or one dispatched alone, a
+ * Ticket's report as part of its batch's one message, and a question, an answer, a blocked or failed report, or an urgent
+ * Ticket's report at once even while the rest of its batch still works. Undefined for a report kept internal, such as routine
+ * progress.
+ */
+export function reportNotice(store: Pick<Store, 'tickets'>, ticket: Ticket, report: Pick<WorkerReport, 'state' | 'summary' | 'question' | 'answers'>): Relay | undefined {
+  const direct = reportRelay(ticket, report)
+  if (!ticket.batch || batchMembers(store.tickets.list(), ticket.batch).length < 2) return direct
+  const batch = batchRelay(store, ticket)
+  if (batch) return batch
+  const urgent = ticket.urgent || !!report.question || !!report.answers || report.state === 'blocked' || report.state === 'failed'
+  return urgent ? direct : undefined
 }
 /** Formats a worker report relay for the main Session (truncating summaries over 600 characters behind `ticket/<id>/result`); `replyTo` names the human question trigger it answers. */
 export function resultRelay(ticket: Ticket, state: string, text: string, replyTo?: string): Relay {

@@ -210,6 +210,8 @@ Transient provider and network failures get three retries. Launches use effect b
 
 `MasterAssessor` (`src/app/assessment.ts`) lets the main Session assess proactive candidates. `request` queues an assessment effect; `release` drops cached state when its Eval ends.
 
+A deployment may configure auto-route rules in `auto-route.json`: a Trigger whose title carries a configured prefix (with the configured Source and sender, and human when required) is accepted from the same Assessment the main Session would write, through a `route` effect instead of a candidate card. Every Trigger of the batch must match one rule, and anything else falls back to the card; a disabled Policy rule, a malformed file or an `autoRoute: false` payload turns it off for that candidate.
+
 Its `context`, `read` and `decide` methods serve `orchestrator_eval`, `orchestrator_eval_read` and `orchestrator_eval_decide`. They provide bounded Thread context through `SourceRegistry.threadContext`, repository context, and decision submission. A kind without a context reader supplies only the Trigger and batch.
 
 `assessmentOutcome` converts the model's answer for `Engine.decide`. Evals checks inferred acceptance against the current Policy again.
@@ -308,6 +310,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/core/assignments.ts` | `Assignments`: the Executor's facts and its workers' Reports |
 | `src/core/replies.ts` | `Replies`: the Engine's Channel writes |
 | `src/core/stage.ts` | `ticketStage` and `canRetry`: the Ticket stages of [003 Execution](003-execution.md) |
+| `src/core/resident.ts` | `ResidentRules`, `rotationReason`, `idleResident` and the rotation labels: the cleaning rules of a semi-resident Ticket |
 | `src/core/errors.ts` | `UserError` and `USER_ERRORS` |
 | `src/core/reasons.ts` | `Reason`, `REASONS` and `reasonText`: why the core recorded a Decision or set a Trigger aside, by code |
 | `src/core/ids.ts` | `key`: ids derived from their inputs, equal for equal inputs |
@@ -317,7 +320,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
 | `src/app/passes.ts` | Passes, the pass scheduler |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
-| `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay` and `followupRelay` |
+| `src/app/notices.ts` | The main Session's notices and relays: `eventNotice`, `reportRelay`, `resultRelay`, `batchRelay` and `followupRelay` |
 | `src/app/store.ts` | The Store, and `Receipt`, a message of the outbox |
 | `src/app/store-read.ts` | `storeReads`: the Store's read queries for the views, the tools and the Sources' polls, which never write |
 | `src/app/migration.ts` | The schema 11 migration: one step from schema 10 that writes every stored record in its current shape |
@@ -334,6 +337,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/retry-health.ts` | `RetryHealth`: which Sessions wait on a model budget retry, for the `models` health entry |
 | `src/app/role-models.ts` | Resolves the Eval and Executor models, and seeds a new Session with its role's model |
 | `src/app/assessment.ts` | The MasterAssessor, the assessment schema and the window `orchestrator_eval` answers |
+| `src/app/auto-route.ts` | The deployment's deterministic auto-route rules: a title prefix that marks simple work, read from `auto-route.json`, and the Assessment the main Session would have written |
 | `src/app/execution-environment.ts` | The execution environment: its variables, a Ticket's values, the directory root and the lines of the prompt section, which `src/app/prompts.ts` fills into its template |
 | `src/app/source-context.ts` | `sourceContextOf`: each Source kind's `SourceContext` |
 | `src/app/links.ts` | `sourceLink`, the page of a Trigger's message, and `candidateCard` |
@@ -368,6 +372,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
+| `src/sources/msp.ts` | The MSP kind and plugin entry, exported as `./msp-watch`: local node signals pushed as newline-delimited JSON by `python/msp_bridge.py`, mapped to senderless Triggers under the `ambient` admission row. No polling |
+| `src/sources/experiences.ts` | Experience files: frontmatter parsing, `trigger` and `condition` matching, and the experience block a matched signal carries into the assessment or worker prompt |
+| `src/sources/experience-tools.ts` | The five model-facing experience tools — list, read, create, update, disable — writing `<experienceDir>/<id>.md` under a slug-only id |
+| `src/sources/msp-act.ts` | Patch one, reach: `msp_nodes` lists reachable peers and what they declare, `msp_publish` emits a signal on any path, and `msp_call` invokes a peer's declared tool. Every capability is a node and every action is a signal, so a new device needs no adapter |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
 | `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone` |
@@ -397,7 +405,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
+`src/sources/github.ts`, `src/sources/feishu.ts` and `src/sources/msp.ts` are the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch` and `./msp-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with Feishu and MSP disabled.
 
 ## Tests
 
@@ -405,13 +413,17 @@ Some generic modules still refer directly to GitHub or Feishu:
 | --- | --- |
 | `tests/core-engine.spec.ts` | Domain rules on in-memory repositories: receiving, Eval, fan-out, resume and stop, interrupted Assignments, the pause, Policy changes, reports and outcomes, attaching, replies, failed deliveries and dismissed problems |
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
+| `tests/resident.spec.ts` | Semi-resident Tickets: each cleaning rule, a Ticket that stays open and takes new work, and its rotation with a handoff |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
+| `tests/msp.test.mjs` | The MSP Source: signal→Trigger mapping, the senderless machine actor, the ambient admission row, deterministic ids |
+| `tests/experience-tools.spec.ts` | The experience tools: the level a create lands on, the refused downgrade, and ids that stay inside the experience directory |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |
 | `tests/assessment.spec.ts` | What the MasterAssessor keeps per Eval, and when it lets go |
+| `tests/auto-route.spec.ts` | Simple work accepted without a candidate card: the configured title prefixes, the sender and human checks, a disabled Policy rule, a batch that is not all simple work, and an edited or malformed rules file |
 | `tests/background.spec.ts` | Waiting for a worker's shell jobs and subagents: an end that woke it, and a host that stops |
 | `tests/bundle-patch.spec.ts` | The bundle's patch, read as DeepSeek Harness reads it, and the agent preset of Executor Sessions it defines |
 | `tests/effects.spec.ts` | The effect queue: coalescing, limits, retries with backoff, health and shutdown |
@@ -424,7 +436,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/delivery.spec.ts` | `AgentDelivery` |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
+| `tests/scene-workspace.spec.ts` | A dispatch that names a scene: the directory a Ticket works in, and the fallbacks of a payload without one |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
+| `tests/batch.spec.ts` | A dispatch batch: one message when its last Ticket reports, the batch a call or a `batch` field names, a lone Ticket's own report, a question or a blocked report that does not wait, and an urgent Ticket that reports at once |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
 | `tests/settings.spec.ts` | Settings saves that race a model or account check, a Policy sync that a save outran, and the refusals of the pause, a sync and a block |
@@ -586,10 +600,13 @@ These messages are steered into the main Session's turn:
 | --- | --- |
 | Candidate | Batch Trigger cards, Thread, `related_tickets`, `tickets_total`, `delivered_to`, referenced Tickets from Issue/PR links, `handed_back` reasons and the next action |
 | `follow_up` | One message as its Executor sees it, `replies_to`, receiving Tickets, and the reminder that Executors decide it while the main Session may only stop work |
-| `worker_report` | Ticket card, originating Trigger, state and summary up to 600 characters; `chars` and a read pointer when truncated |
+| `worker_report` | Ticket card, originating Trigger, state and summary up to 600 characters; `chars` and a read pointer when truncated. The report that ends a ticket carries the end in its card |
+| `batch_report` | A dispatch batch's Tickets, oldest first, each with its card state, the start of its latest report and a read pointer, sent once when the batch's last Ticket has reported |
 | `worker_attention` | Ticket card carrying the question |
 
-Other notices are injected without waking the main Session: `ticket_ended`, `settings_saved`, prompt saves, Trigger requeues, dropped Subscriptions and context follows. A settings notice names the block, changed paths and `read: settings/<block>`. The main Session receives no redundant notice for a save, requeue, unsubscribe or attach it performed itself.
+Other notices are injected without waking the main Session: `ticket_ended`, `settings_saved`, prompt saves, Trigger requeues, dropped Subscriptions and context follows. A `ticket_ended` notice reports an end no report announced, such as a person's stop or a merged pull request; a report that ends a ticket tells it once, with its card. A settings notice names the block, changed paths and `read: settings/<block>`. The main Session receives no redundant notice for a save, requeue, unsubscribe or attach it performed itself.
+
+Tickets the main Session accepted together in one `orchestrator_route` call, or with the same `batch`, are a dispatch batch: their `worker_report`s are replaced by one `batch_report` sent when the batch's last Ticket has reported, so several Tickets wake the main Session once. A question, an answer to one, and a blocked or failed report reach it at once instead; a Ticket dispatched alone reports as before. A batch whose Tickets end without a report, such as several a person stopped, sends no `batch_report`. A Ticket a dispatch marked urgent (`payload.urgent === true`, as `派活.mjs --urgent` sends) also reports at once, and keeps its line in the batch's message, so an urgent result never waits for the rest of its batch.
 
 Workers receive assignments and Inputs inline. The first message includes the title, up to 1,500 characters of assignment text and the source Trigger card. Inputs carry a Trigger card with up to 600 characters and `replies_to`, or plain Input text. Read pointers appear only for truncated content.
 

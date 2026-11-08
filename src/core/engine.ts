@@ -238,6 +238,11 @@ export class Engine {
    */
   report(ticketId: string, report: WorkerReport): Ticket { return this.repo.atomic(() => this.assignments.report(ticketId, report)) }
   /**
+   * The Executor's fact that a worker's latest turn filled `percent` (0–100) of its model's context window, which the
+   * context cleaning rule reads when the ticket finishes an item.
+   */
+  contextUsage(ticketId: string, percent: number): void { this.repo.atomic(() => { this.assignments.context(ticketId, percent) }) }
+  /**
    * Handles an assignment that was running when the host stopped: restarts it with a recovery note unless its latest report is
    * `waiting`, `ready`, `blocked`, or `failed` and no Input reached its worker after that report, in which case it keeps its
    * Session and state and gets the Inputs that wait for it.
@@ -267,4 +272,4 @@ export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reeva
 export type EngineForSettings = Pick<Engine, 'policyChanged'>
 /** What the Executor tells the Engine, and what its workers ask of it. */
 export type EngineForExecutor = Pick<Engine, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed'
-  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply'>
+  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply' | 'contextUsage'>

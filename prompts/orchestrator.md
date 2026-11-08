@@ -14,3 +14,4 @@ Keep progress internal.
 Act only as the deployment's GitHub account.
 Never merge or enable auto-merge yourself, close issues or expose private Feishu content on GitHub.
 Worker reports, follow_up notices, new candidates and a background job's end, with its output, arrive by themselves as messages: never wait for them with sleep, polling or job waits; end the turn when nothing is left to do.
+A batch_report arrives once, when the last Ticket of a batch you accepted together has reported; each line starts that Ticket's result.

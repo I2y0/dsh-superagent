@@ -124,13 +124,29 @@ export class Assignments extends EnginePart {
     if (report.answers && !ticket.answers?.includes(report.answers)) ticket.answers = [...ticket.answers ?? [], report.answers]
     if (report.answers) this.takeUp(ticketId, report.answers)
     if (report.state === 'blocked' || report.state === 'failed') ticket.undelivered = ticket.undelivered.filter(id => !automatic(ticket.inputs.find(input => input.id === id)))
+    // An item that failed or blocked rotates a resident ticket when it later finishes (see `ResidentRules.onError`).
+    if ((report.state === 'blocked' || report.state === 'failed') && this.resident().enabled) {
+      ticket.resident = { ...ticket.resident ?? { since: ticket.createdAt, rounds: 0 }, error: true }
+    }
     this.repo.tickets.save(ticket)
     // A ticket that follows Threads ends with them: a ready report ends it only once followsDone holds, with that outcome.
     const ready = !ticket.follows?.length ? 'completed' : this.tickets.followsDone(ticket)?.outcome
-    // A dropped report after a close the ticket deferred ends it as the close did, which its final notice tells.
+    // A dropped report after a close the ticket deferred ends it as the close did, which its final report tells.
     const outcome = report.state === 'dropped' ? this.tickets.followsDone(ticket)?.outcome ?? 'dropped' : report.state === 'ready' ? ready : undefined
-    if (outcome) this.tickets.end(ticketId, 'executor', outcome, at)
+    // A finished work item leaves a semi-resident ticket open for the next one, unless a cleaning rule rotates it (see `Tickets.idle`).
+    if (outcome && !this.tickets.idle(ticketId, outcome, at)) this.tickets.end(ticketId, 'executor', outcome, at, undefined, true)
     return this.require(ticketId)
+  }
+  /**
+   * Records how full the ticket's worker context was at its latest turn end, which the resident context rule reads when the
+   * ticket finishes an item.
+   */
+  context(ticketId: string, percent: number): void {
+    if (!this.resident().enabled) return
+    const ticket = this.repo.tickets.get(ticketId)
+    if (!ticket || !liveTicket(ticket) || !Number.isFinite(percent)) return
+    ticket.resident = { ...ticket.resident ?? { since: ticket.createdAt, rounds: 0 }, contextPercent: Math.max(0, Math.min(100, Math.round(percent))) }
+    this.repo.tickets.save(ticket)
   }
   /** The ticket, while it is open and `assignmentId` runs it. */
   private running(ticketId: string, assignmentId: string): Ticket | undefined {

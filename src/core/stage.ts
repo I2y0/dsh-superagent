@@ -1,5 +1,6 @@
 /** Ticket stage classification and retry eligibility (docs/003). */
 import { latestAssignment, waitsForPerson, type Ticket } from './model.ts'
+import { idleResident } from './resident.ts'
 
 /** High-level execution stage of a ticket: waiting on a person, actively working or queued, idle between turns, or ended. */
 export type TicketStage = { stage: 'person'; action: 'delivery' | 'answer' | 'review' | 'blocked' | 'failed' }
@@ -10,6 +11,8 @@ export function ticketStage(ticket: Ticket): TicketStage {
   if (ticket.ended) return { stage: 'ended' }
   if (ticket.delivery) return { stage: 'person', action: 'delivery' }
   if (ticket.attention) return { stage: 'person', action: 'answer' }
+  // A semi-resident ticket that finished its work item waits for the next Trigger instead of a person's review.
+  if (idleResident(ticket)) return { stage: 'idle' }
   const assignment = latestAssignment(ticket)
   const report = assignment?.report?.state
   if (report === 'ready') return { stage: 'person', action: 'review' }

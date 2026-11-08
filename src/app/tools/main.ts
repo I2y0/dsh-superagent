@@ -17,6 +17,8 @@ import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 const RoutingNoteSchema = z.string().trim()
   .refine(text => wordCount(text) <= NOTE_WORDS, `Routing note must not exceed ${NOTE_WORDS} words (Chinese uses word segmentation). Shorten it; do not split it across deliveries.`)
   .describe(`Optional routing background or explicit human constraint, at most ${NOTE_WORDS} words. Never add implementation instructions or replace the original source.`)
+/** Characters a dispatch batch's name may have; Tickets accepted together get one hashed from their triggers. */
+const BATCH_CHARS = 64
 export interface MainToolsHost {
   readonly context: Context
   readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
@@ -52,6 +54,7 @@ const RouteItemSchema = z.object({
   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
+  batch: z.string().nullish().describe('accept: the dispatch batch this ticket joins, such as several tickets one request split into. Tickets accepted together in one call with no batch share one, and their reports reach you once, when the last of them has reported.'),
   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
 }).strict()
 type RouteItem = z.infer<typeof RouteItemSchema>
@@ -64,6 +67,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
+  batch: { check: z.string().trim().min(1).max(BATCH_CHARS), reads: ['accept'], needs: [] },
   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
 }
 /** Why an item cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
@@ -95,7 +99,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
     case 'accept': {
       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note })
+        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note, ...item.batch ? { batch: item.batch } : {} })
       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
       if (decision.id === before) {
@@ -128,8 +132,12 @@ function routeTool(host: MainToolsHost): Tool {
     description: 'Route candidates, one item each by the card\'s trigger_id, in one call: accept an explicit request as a new ticket, attach a trigger to an existing ticket, stop a ticket on a person\'s stop message, or ignore a candidate that needs no ticket or stop, as dispatch says. Items run in order and each is answered on its own; a refused item leaves the others. An inferred candidate may be ignored here; accepting one goes through orchestrator_eval_decide.',
     schema: z.object({ decisions: z.array(RouteItemSchema).min(1).max(20) }).strict(),
     execute: async ({ decisions }) => {
+      // Tickets accepted together in one call form one dispatch batch: their reports reach the main Session as one message.
+      const together = decisions.flatMap(item => item.kind === 'accept' && !item.batch && !invalid(item) ? [item.trigger_id] : [])
+      const shared = together.length > 1 ? `b-${key('batch', ...together).slice(0, 12)}` : undefined
+      const items = shared === undefined ? decisions : decisions.map(item => together.includes(item.trigger_id) && item.kind === 'accept' ? { ...item, batch: shared } : item)
       const decided = new Map<string, string>()
-      const results = decisions.map(item => {
+      const results = items.map(item => {
         const head = { trigger_id: item.trigger_id, kind: item.kind }
         const problem = invalid(item)
         if (problem) return { ...head, refused: problem }

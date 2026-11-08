@@ -24,6 +24,8 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
 
+An MSP Trigger whose payload names a scene (`scene.dir`, as a seat dispatch writes it) makes that existing absolute directory the Ticket's directory instead: the worker starts in the scene directory, its `lessons.md` and handoff notes land there, and the Ticket keeps its short name without a directory of its own under the execution root. A payload whose `scene.dir` is relative or no longer exists is ignored, so preparation and the prepare command stay as described below. Tickets that name the same scene share that directory, and their handoff files with it.
+
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
 The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.
@@ -93,6 +95,8 @@ Reviews without a body, such as approvals, also arrive as Triggers and can wake 
 
 - **Ready without a pull request:** a `ready` Report ends the Ticket as completed.
 - **Nothing to do:** an Executor that finds no work for a person to act on, such as a request that does not reproduce or is superseded, reports `dropped`. The Ticket ends without a message, unless a matched rule asks for one, and a person's later message on its Threads resumes it.
+
+A Report that ends the work — `ready`, `blocked`, `failed` or `dropped` — is accepted only once the Ticket's `lessons.md` exists in its directory: what the Ticket taught that the next worker should not have to rediscover, one line per lesson saying what the pit was and how it was found, or `无` when there is nothing to pass on. The worker's prompt asks it to name the file in the Report. A refused Report records nothing and reaches no one, so the worker keeps its evidence and reports again; a `progress` Report ends nothing and is not held to this.
 ### Pull requests
 
 A Ticket follows the pull request it started from once its Executor reports it. It also follows each pull request opened from its branch once reported by the Executor or found by the GitHub Source. Reopened pull requests are followed again.

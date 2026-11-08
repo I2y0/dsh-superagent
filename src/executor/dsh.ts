@@ -2,8 +2,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { statSync } from 'node:fs'
 import { mkdir, rmdir, stat } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
   from '../core/index.ts'
@@ -15,7 +16,7 @@ import { Later, type Effects } from '../app/effects.ts'
 import { executionRoot, type Variable } from '../app/execution-environment.ts'
 import type { Sessions } from '../app/sessions.ts'
 import { WorktreeNameSchema } from '../app/assessment.ts'
-import { resultRelay } from '../app/notices.ts'
+import { batchMembers, batchRelay, resultRelay } from '../app/notices.ts'
 import type { HealthEntry } from '../infra/health.ts'
 import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
 
@@ -61,7 +62,7 @@ export interface ExecutorHost {
   readonly context: Context
   /** Where the Executor reports what happened to Assignments and Inputs. */
   readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
-    | 'assignmentInterrupted'>
+    | 'assignmentInterrupted' | 'contextUsage'>
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'set' | 'settings' | 'atomic' | 'afterCommit'>
   /** Durable effect queue through which launches and input deliveries run. */
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
@@ -93,9 +94,38 @@ export function mandateInstructions(mandate: Pick<Mandate, 'strength'>): string 
     + 'internal to one module within the accepted rule scope. If it requires public-interface or behavior changes, new interaction, product '
     + 'decisions or clarification, stop and report dropped; do not expand scope.' : ''
 }
-/** Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. */
+/**
+ * The scene directory an MSP dispatch named in its payload (`scene.dir`), which becomes the ticket's working directory
+ * instead of its own directory under the execution root. Only an existing absolute directory counts, so a malformed or
+ * stale payload falls back to the per-ticket directory rather than failing the launch.
+ */
+export function sceneDirectory(trigger: Trigger | undefined): string | undefined {
+  const payload = trigger?.meta?.mspPayload
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined
+  const scene = (payload as Record<string, unknown>).scene
+  if (!scene || typeof scene !== 'object' || Array.isArray(scene)) return undefined
+  const directory = (scene as Record<string, unknown>).dir
+  if (typeof directory !== 'string' || !isAbsolute(directory.trim())) return undefined
+  const named = directory.trim()
+  return statSync(named, { throwIfNoEntry: false })?.isDirectory() ? named : undefined
+}
+/**
+ * Whether a dispatch marked its ticket urgent in the MSP payload (`urgent: true`, as `派活.mjs --urgent` sends): that ticket's
+ * report reaches the main Session as soon as it has one, instead of waiting for its batch's last Ticket. Only an explicit
+ * `true` counts, so a malformed payload leaves the ticket routine.
+ */
+export function urgentDispatch(trigger: Trigger | undefined): boolean {
+  const payload = trigger?.meta?.mspPayload
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
+  return (payload as Record<string, unknown>).urgent === true
+}
+/**
+ * Builds a newly accepted ticket's Execution metadata: its worktree name, workspace directory, and assignment text. A
+ * scene directory from the dispatcher replaces the directory under the execution root, which then holds no ticket
+ * directory of its own; the tickets of one scene share that directory.
+ */
 export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>, settings: Settings,
-  stateDir: string): Execution {
+  stateDir: string, sceneDir?: string): Execution {
   const name = ticketWorktreeName(outcome.name ?? '', ticket.id)
   const source = ticket.origin.triggerId
   const note = outcome.note ? `\nRouting note (not the source request): ${outcome.note}` : ''
@@ -107,7 +137,7 @@ export function ticketExecution(ticket: Ticket, outcome: Extract<AssessmentOutco
   const assignment = ticket.mandate.strength === 'inferred' && ruleIds
     ? `Proactively accepted under ${ruleIds.join(', ')}. Scope: ${outcome.scope}.${precedence}${note}`
     : note.trim()
-  return { name, directory: join(executionRoot(settings, stateDir), name), assignment }
+  return { name, directory: sceneDir ?? join(executionRoot(settings, stateDir), name), assignment }
 }
 /** Character limits for inline assignment and trigger text in worker messages; longer text is read via its resource. */
 const ASSIGNMENT_CHARS = 1500, TRIGGER_CHARS = 600
@@ -129,6 +159,21 @@ export const batchLine = (trigger: Trigger) => ({ trigger_id: trigger.id, from: 
 /** Returns the other triggers in a ticket's origin batch (excluding the primary `origin.triggerId`), oldest first. */
 export const batchOf = (host: { store: Pick<Store, 'triggers'> }, ticket: Ticket): Trigger[] => ticket.origin.triggerIds
   .filter(id => id !== ticket.origin.triggerId).flatMap(id => host.store.triggers.get(id) ?? [])
+/**
+ * How full a worker's model context was at its latest step, as a share (0–100) of its route's context window: the input
+ * tokens of the last assistant message over the window the Session last logged. Undefined when it logged either.
+ */
+export function contextPercent(agent: Pick<Agent, 'session'>): number | undefined {
+  type Logged = { type: string; data?: { usage?: { inputTokens?: number }; contextWindow?: number } }
+  const events = agent.session.snapshotEvents() as readonly Logged[]
+  let used: number | undefined, window: number | undefined
+  for (let index = events.length - 1; index >= 0 && (used === undefined || window === undefined); index--) {
+    const event = events[index]!
+    if (used === undefined && event.type === 'assistant/message') used = event.data?.usage?.inputTokens
+    if (window === undefined && event.type === 'request/context') window = event.data?.contextWindow
+  }
+  return window && window > 0 && used !== undefined ? (used / window) * 100 : undefined
+}
 const RESUMED = 'This ticket ended earlier and the message that follows, on its thread, resumed it under the same mandate. If it asks for '
   + 'more within the original scope, inspect the worktree, git history and PR state and continue; if it asks for work beyond that scope or '
   + 'for another ticket, hand it back with orchestrator_trigger_handback and report dropped; if it needs nothing, such as thanks, '
@@ -236,7 +281,10 @@ export class DshExecutor implements Executor {
   }
   /** Populates a newly accepted ticket's `execution` attributes (worktree name, workspace directory, and assignment text). */
   prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
-    return { ...ticket, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir) }
+    const trigger = sourceTrigger(this.host, ticket)
+    const sceneDir = sceneDirectory(trigger)
+    const urgent = urgentDispatch(trigger) ? { urgent: true as const } : {}
+    return { ...ticket, ...urgent, execution: ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir, sceneDir) }
   }
   /**
    * Runs the configured `executor.prepare` command for a new ticket workspace in its parent directory with the ticket's
@@ -417,8 +465,20 @@ export class DshExecutor implements Executor {
   private failed(ticketId: string, summary: string): void {
     this.host.store.atomic(() => {
       const updated = this.host.engine.report(ticketId, { state: 'failed', summary })
-      this.relay(resultRelay(updated, 'failed', summary))
+      this.report(updated, 'failed', summary)
     })
+  }
+  /**
+   * Relays a report the Executor itself made: a Ticket in a batch of several reports with its batch, once its last Ticket
+   * has reported, and an error or an urgent Ticket's report reaches the main Session at once as well.
+   */
+  private report(ticket: Ticket, state: 'waiting' | 'failed', text: string): void {
+    const grouped = !!ticket.batch && batchMembers(this.host.store.tickets.list(), ticket.batch).length > 1
+    const batch = grouped ? batchRelay(this.host.store, ticket) : undefined
+    if (batch) { this.relay(batch); return }
+    // A Ticket in a batch holds its routine report until the batch's last one, while an error and an urgent Ticket reach the main Session at once.
+    if (grouped && state === 'waiting' && !ticket.urgent) return
+    this.relay(resultRelay(ticket, state, text))
   }
   private relay({ id, text }: { id: string; text: string }): void { this.host.sessions.relay(id, text) }
   private async launch(ticket: Ticket, assignment: Assignment): Promise<void> {
@@ -600,6 +660,9 @@ export class DshExecutor implements Executor {
   }
   private async workerIdle(ticket: Ticket, idle: Assignment, agent: Agent): Promise<void> {
     await agent.whenIdle()
+    // How full its context is, which the resident cleaning rule reads when the ticket finishes its next item.
+    const used = contextPercent(agent)
+    if (used !== undefined) this.host.engine.contextUsage(ticket.id, used)
     // A turn that failed for a passing reason goes on after its backoff, which is no end of the turn.
     if (this.resuming.has(idle.id) || agent.status !== 'idle') return
     // A turn that ended as turns do starts the count of passing failures again.
@@ -664,10 +727,8 @@ export class DshExecutor implements Executor {
       const before = latestReport(current)?.summary ?? ''
       const updated = this.host.engine.report(ticket.id, { state: 'waiting', summary: said || before })
       // A quiet final after orchestrator_report is not a new status or an empty handoff.
-      if (said) this.relay(resultRelay(updated, 'waiting', said))
-      else if (!before.trim()) {
-        this.relay(resultRelay(updated, 'waiting', 'Worker ended without a status report. Use orchestrator_ticket_request_status to request one.'))
-      }
+      const relayed = said || (!before.trim() ? 'Worker ended without a status report. Use orchestrator_ticket_request_status to request one.' : '')
+      if (relayed) this.report(updated, 'waiting', relayed)
     })
   }
 }

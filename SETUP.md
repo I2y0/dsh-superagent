@@ -55,7 +55,7 @@ Do not ask about values with a good default; list them in the plan instead:
 - profile `superagent`, a copy of DSH's Web profile kept apart from the profile the operator works in, so it restarts without closing their Sessions; port `3082`; state directory `<home>/.dsh/state/superagent` as an absolute path;
 - an hourly check from the operator's own profile, which repairs dsh-superagent when it is not running;
 - branch prefix `agent/`;
-- accept mode `observe`, which records proactive work without doing it, and the default rules and prompt sections;
+- accept mode `auto`, so an experience that authorizes work is acted on; `observe`, which records "would accept" without doing it, is what to switch to while tuning noise down, and the default rules and prompt sections;
 - with Feishu: the bot reads only mentions, and direct messages are on.
 
 ## 3. Plan

@@ -5,3 +5,6 @@ Repeating the same question reuses its request; a different question replaces it
 Clear a resolved question explicitly rather than treating later progress as its resolution.
 Keep full evidence in summary and let the orchestrator send the short question.
 Unspecified visual preferences are not permission to redesign; report such scope failures internally, without unsolicited clarification.
+
+Before a report that ends the work (ready, blocked, failed or dropped), write `lessons.md` in this ticket's directory: what the ticket taught the next worker, one line per lesson saying what the pit was and how you found it, or `无` when there is nothing to pass on; create an experience with `experience_create` when a lesson is reusable beyond this ticket.
+Name that file in the report summary: the host refuses a final report without it and records nothing.

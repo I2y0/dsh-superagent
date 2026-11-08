@@ -20,6 +20,8 @@ describe('ticketStage', () => {
     ['answer before review', ticket({ attention, assignments: [reported('ready')] }), { stage: 'person', action: 'answer' }],
     ['answer before a failure', ticket({ attention, assignments: [reported('failed')] }), { stage: 'person', action: 'answer' }],
     ['a ready Report', ticket({ assignments: [reported('ready')] }), { stage: 'person', action: 'review' }],
+    ['a ready Report of a resident ticket waiting for work', ticket({ resident: { since: 'then', rounds: 1, idleSince: 'then' }, assignments: [reported('ready')] }), { stage: 'idle' }],
+    ['a resident ticket a person must still answer', ticket({ resident: { since: 'then', rounds: 1, idleSince: 'then' }, attention, assignments: [reported('ready')] }), { stage: 'person', action: 'answer' }],
     ['a ready Report of an ended Assignment', ticket({ assignments: [reported('ready', { state: 'ended' })] }), { stage: 'person', action: 'review' }],
     ['a blocked Report', ticket({ assignments: [reported('blocked')] }), { stage: 'person', action: 'blocked' }],
     ['a failed Report', ticket({ assignments: [reported('failed')] }), { stage: 'person', action: 'failed' }],

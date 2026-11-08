@@ -14,6 +14,7 @@ import { relatedTickets } from './cards.ts'
 import { textPage } from './context.ts'
 import { AcknowledgementSchema } from './tools/tool.ts'
 import type { Effects } from './effects.ts'
+import { autoRouteAssessment, loadAutoRoute } from './auto-route.ts'
 
 /** Schema for a short lowercase kebab-case English ticket worktree name (1–4 words, at most 32 characters). */
 export const WorktreeNameSchema = z.string().max(32).regex(/^[a-z]+(?:-[a-z0-9]+){0,3}$/, 'Use 1–4 short English words in lowercase kebab-case, at most 32 characters').describe('Meaningful short English ticket name, e.g. fix-plan-color. Translate Chinese titles into English; no Chinese, pinyin or generic ticket names. 1–4 lowercase words in kebab-case, at most 32 characters.')
@@ -99,9 +100,28 @@ export class MasterAssessor implements Assessor {
       await this.host.deliver(`candidate:${evalId}`, JSON.stringify({ kind: 'candidate', ...await this.host.candidateCard(candidate) }))
       this.host.engine.candidateDelivered(evalId)
     }, { limit: () => host.paused() ? 0 : 4 })
+    // Dispatches the deployment's auto-route file settles are decided here, without building a card: see `request`.
+    host.effects.handle('route', async ({ triggerId }, evalId) => {
+      const candidate = this.host.engine.candidate(triggerId)
+      if (candidate?.evalId !== evalId) return
+      const settings = this.host.settings()
+      const choice = autoRouteAssessment(candidate, settings, loadAutoRoute(this.host.deployment.stateDir))
+      let outcome
+      try { outcome = choice && assessmentOutcome(choice.assessment, settings, candidate.strength) } catch { outcome = undefined }
+      // Anything the deterministic path cannot settle falls back to the seat's own assessment rather than deciding on its behalf.
+      const settled = choice?.decision === 'accept' ? outcome?.kind === 'accept' : choice?.decision === 'silent' ? outcome?.kind === 'ignore' : false
+      if (!outcome || !settled) { this.host.effects.enqueue('assessment', evalId, { triggerId }); return }
+      try { this.host.engine.decide(triggerId, { ...outcome, evalId }) }
+      catch { this.host.effects.enqueue('assessment', evalId, { triggerId }) }
+    }, { limit: () => host.paused() ? 0 : 4 })
   }
-  /** Enqueues an `assessment` effect to deliver `candidate`'s card to the main Session. */
-  request(candidate: Candidate): void { this.host.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id }) }
+  /** Enqueues the work that carries a candidate toward a decision: auto-route when configured for it, else the main Session's card. */
+  request(candidate: Candidate): void {
+    const triggerId = candidate.triggers[0]!.id
+    const route = autoRouteAssessment(candidate, this.host.settings(), loadAutoRoute(this.host.deployment.stateDir))
+    if (route) this.host.effects.enqueue('route', candidate.evalId, { triggerId })
+    else this.host.effects.enqueue('assessment', candidate.evalId, { triggerId })
+  }
   /** Whether `evalId` is still the active evaluation for `trigger`. */
   private live(evalId: string, trigger: Trigger): boolean { return this.host.engine.candidate(trigger.id)?.evalId === evalId }
   /** Drop an Eval's context and reads once it finishes; any running load for it discards its result. */

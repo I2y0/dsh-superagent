@@ -3,12 +3,12 @@ import { bindScopeParent } from '@deepseek-ai/dsh-scope'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { Runtime } from '../src/app/runtime.ts'
-import { jobRegistry } from './fixtures/host.ts'
+import { jobRegistry, seedLessons } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
 import { mandateInstructions } from '../src/executor/dsh.ts'
 import { masterPrompt } from '../src/app/context.ts'
@@ -124,6 +124,10 @@ const worktreeName = 'fix-regression'
 async function route(item: Record<string, unknown>): Promise<Record<string, unknown>> {
   const { results } = await runTool(runtime.masterId, 'orchestrator_route', { decisions: [item] }) as { results: Record<string, unknown>[] }
   if (results[0]!.refused) throw new Error(String(results[0]!.refused))
+  // An accepted ticket's worker keeps its lessons file, which its final report is checked against.
+  const accepted = (results[0] as { ticket?: { ticket_id: string } }).ticket
+  const directory = accepted && runtime.store.tickets.get(accepted.ticket_id)?.execution?.directory
+  if (directory) seedLessons(directory)
   return results[0]!
 }
 async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归')) {
@@ -275,7 +279,8 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   expect(details).not.toHaveProperty('rules')
   expect(details).toMatchObject({ trigger_id: trigger.id, strength: 'inferred', policy_version: policyVersion(runtime.store.settings()), thread: expect.objectContaining({ complete: true, loaded_messages: 0 }) })
   const decision = (id: string) => ({ trigger_id: id, decision: 'accept', title: '文案修订', worktree_name: 'copy-fix', scope: '改副标题', reason: 'explicit copy change', intent_evidence: 'quoted', acknowledgement: '收到，把副标题改成“浏览网页”。',
-    rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'copy change' }, { rule_id: 'visual', matched: false, reason: 'not visual' }],
+    rule_assessments: [{ rule_id: 'copy', matched: true, reason: 'copy change' }, { rule_id: 'visual', matched: false, reason: 'not visual' },
+      { rule_id: 'msp-local', matched: false, reason: 'not a local signal' }],
     direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'the message names the replacement' } })
   expect(await runTool(runtime.masterId, 'orchestrator_eval_decide', decision(trigger.id))).toMatchObject({ decision: 'ignore', reason: expect.stringContaining('Observe mode') })
   expect(runtime.store.tickets.list()).toEqual([])
@@ -287,6 +292,7 @@ it('assesses a proactive observation in the orchestrator Session and creates the
   const accepted = await runTool(runtime.masterId, 'orchestrator_eval_decide', decision(again.id))
   expect(accepted).toMatchObject({ decision: 'accept', ticket: { ticket_id: expect.any(String) } })
   const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+  seedLessons(ticket.execution!.directory)
   expect(ticket.mandate).toMatchObject({ strength: 'inferred', basis: expect.objectContaining({ via: 'admission', rules: ['copy'], observation: { mode: 'auto' } }) })
   expect(runtime.store.replyStatus(key('ack', again.id))).toBeDefined()
   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('Proactively accepted under copy') })
@@ -301,9 +307,11 @@ it('accepts silently under a rule that says so, gives the worker the rule proced
   vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ items: [{ message_id: 'om_20', chat_id: CHAT }] })
   await runTool(runtime.masterId, 'orchestrator_eval', { trigger_id: trigger.id })
   const accepted = await runTool(runtime.masterId, 'orchestrator_eval_decide', { trigger_id: trigger.id, decision: 'accept', title: '主题图标颜色', worktree_name: 'theme-icon-color', scope: 'bug', reason: 'reported defect', intent_evidence: 'quoted',
-    rule_assessments: [{ rule_id: 'copy', matched: false, reason: 'no' }, { rule_id: 'visual', matched: false, reason: 'no' }, { rule_id: 'silent-bugfix', matched: true, reason: 'bug report' }],
+    rule_assessments: [{ rule_id: 'copy', matched: false, reason: 'no' }, { rule_id: 'visual', matched: false, reason: 'no' },
+      { rule_id: 'msp-local', matched: false, reason: 'not a local signal' }, { rule_id: 'silent-bugfix', matched: true, reason: 'bug report' }],
     direction: { implementation_requested: true, target_basis: 'existing-standard', requires_design_decision: false, evidence: 'expected colour is the light palette' } })
   const ticket = runtime.store.tickets.get((accepted.ticket as { ticket_id: string }).ticket_id)!
+  seedLessons(ticket.execution!.directory)
   expect(runtime.store.replyStatus(key('ack', trigger.id))).toBeUndefined()
   await runtime.idle()
   expect(sections.get(`worker-${ticket.id}`)!.text({})).toContain(mandateInstructions({ strength: 'inferred' }))
@@ -655,7 +663,7 @@ it('describes rule edits in the Policy history and skips Policy syncs that chang
   // The sync chat lists exactly the allowed users already, so nothing is saved.
   await runtime.settings.sync('feishu')
   expect(revision()).toBe(before)
-  await runtime.settings.save('policy', { ...runtime.store.settings().policy, rules: [{ ...settings.policy.rules[0]!, name: '文案' }, { ...settings.policy.rules[1]!, enabled: false }, { id: 'docs', name: '文档', enabled: true, instruction: 'x' }] }, runtime.store.blockRevision('policy'), 'panel')
+  await runtime.settings.save('policy', { ...runtime.store.settings().policy, rules: [{ ...settings.policy.rules[0]!, name: '文案' }, { ...settings.policy.rules[1]!, enabled: false }, settings.policy.rules[2]!, { id: 'docs', name: '文档', enabled: true, instruction: 'x' }] }, runtime.store.blockRevision('policy'), 'panel')
   expect(policyHistory(runtime.store, runtime.sources, policyVersion(runtime.store.settings())).items[0]!.changes).toEqual([{ code: 'ruleRenamed', from: 'Copy fixes', to: '文案' }, { code: 'ruleDisabled', name: 'Visual fixes' }, { code: 'ruleAdded', name: '文档' }])
 })
 
@@ -851,14 +859,27 @@ it('reports each setup problem where the operator fixes it, and checks the agent
   answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":true}\n'
   // The agent CLI runs in the workers' environment: without the shims on PATH.
   const check = subprocess.spawn.mock.calls.map(([spec]) => spec.argv).find(argv => argv.includes(AGENT()))!
-  expect(check[0]).toBe('env')
-  expect(check[1]!.startsWith('PATH=')).toBe(true)
-  expect(check[1]!.slice('PATH='.length).split(':')).not.toContain(join(directory, 'worker-bin'))
+  // POSIX prefixes the probe with `env PATH=…`; Windows has no `env` and hands the PATH to the child instead.
+  let workerPath = ''
+  if (process.platform === 'win32') {
+    const specs = subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: readonly string[]; env?: Record<string, string> })
+    // Bind to the same call the POSIX branch checks: any spawn carries an env, so matching on PATH alone would assert nothing.
+    workerPath = specs.find(spec => spec.argv.includes(AGENT()))?.env?.PATH ?? ''
+    expect(workerPath).not.toBe('')
+  } else {
+    expect(check[0]).toBe('env')
+    expect(check[1]!.startsWith('PATH=')).toBe(true)
+    workerPath = check[1]!.slice('PATH='.length)
+  }
+  expect(workerPath.split(delimiter)).not.toContain(join(directory, 'worker-bin'))
   const valid = { ...answers }
   // git older than 2.32 ignores GIT_CONFIG_GLOBAL and reads the operator's configuration.
   answers = { ...valid, [HELPERS]: 'file:/home/me/.gitconfig\0!gh auth git-credential\0' }
   await needs('deployment', 'gitTooOld', {})
-  await needs('github', 'repositoryUnset', {}, { github: { repository: '' } })
+  // K2: a deployment with no repository is allowed now; an empty `repository` is not a setup problem.
+  const noRepo = await restart({}, { github: { repository: '' } })
+  await noRepo.ready
+  expect(noRepo.setupProblem).toBeUndefined()
   // A broken Feishu bot leaves Feishu out and says why; GitHub work goes on.
   answers = { ...valid, [`${BOT()} config strict-mode`]: 'strict-mode: off (source: profile)' }
   const next = await restart()
@@ -981,10 +1002,12 @@ it('writes worker shims and the agent environment from the configuration only, a
   expect(readFileSync(join(bin, 'personal-gh'), 'utf8')).toContain('personal-gh is blocked in this installation; use gh, which acts as agent-bot.')
   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
   expect(readFileSync(join(bin, 'gh'), 'utf8')).toContain(`exec '${AGENT()}'`)
-  expect(readFileSync(workerGitConfig(directory), 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = "${credentialHelper(AGENT())}"`)
+  // `gitQuote` escapes `\` and `"`; a Windows CLI path has backslashes, so the file holds the escaped form.
+  const quotedHelper = credentialHelper(AGENT()).replace(/[\\"]/g, char => `\\${char}`)
+  expect(readFileSync(workerGitConfig(directory), 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = "${quotedHelper}"`)
   expect(process.env).toMatchObject({ GIT_CONFIG_GLOBAL: workerGitConfig(directory), GIT_CONFIG_NOSYSTEM: '1' })
   expect(process.env.GIT_AUTHOR_NAME).toBeUndefined()
-  expect(process.env.PATH?.split(':')[0]).toBe(bin)
+  expect(process.env.PATH?.split(delimiter)[0]).toBe(bin)
   await next.stop()
   expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
   expect(process.env.PATH?.split(':')).not.toContain(bin)
@@ -1560,9 +1583,12 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session 
   expect(guards.get(sessionId)!()).toBeUndefined()
   runtime.engine.stopTicket(ticket.id)
   expect(guards.get(sessionId)!()).toBe('Ticket ended; new work needs a new authorized ticket')
-  expect(restricts.get(runtime.masterId)).toEqual([{ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }])
+  // The test profile inherits no shell on Windows (`pwsh` is not registered), so the filtered list has none there.
+  const shell = process.platform === 'win32' ? [] : ['bash']
+  expect(restricts.get(runtime.masterId)).toEqual([{ allow: ['skill', ...shell, 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }])
   // A worker keeps only the profile's work tools: none that ask a person, change the profile, schedule or start work outside
   // the worker slots, reach other Sessions or edit documents, whenever they were registered.
+  // A worker still inherits `bash` from the test profile on Windows, unlike the main Session.
   expect(restricts.get(sessionId)).toEqual([{ allow: ['read', 'read_image', 'grep', 'bash', 'job_output', 'job_list', 'job_kill', 'web_search', 'skill'] }])
 })
 
@@ -1602,6 +1628,9 @@ it('runs a launch that fails for a passing reason again on the launch backoff th
   answers['sh -c exit 3'] = new Error('fatal: unable to access: The requested URL returned error: 503')
   const before = runs()
   const prepared = await acceptedTicket(feishu('40', '@bot 修 prepare', { root_id: undefined }))
+  // The worker's lessons file keeps its directory non-empty, which a prepared workspace looks like; drop it to keep the
+  // premise that a prepare command which failed left nothing behind.
+  rmSync(prepared.ticket.execution!.directory, { recursive: true, force: true })
   await runtime.idle()
   expect(runtime.store.tickets.get(prepared.ticket.id)!.assignments.at(-1)!.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('503') })
   expect(runs()).toBe(before + 1)

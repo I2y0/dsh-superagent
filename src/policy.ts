@@ -5,8 +5,8 @@
 import { LIMITS } from './limits.ts'
 import { z } from 'zod'
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell, type AdmissionRow } from './admission.ts'
-import { key, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
-  type Trigger, type ActorRef, type GateResult } from './core/index.ts'
+import { key, RESIDENT_RULES, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread,
+  type Ticket, type Trigger, type ActorRef, type GateResult } from './core/index.ts'
 import { sameName } from './infra/text.ts'
 import { WORKER_COMMANDS } from './infra/environment.ts'
 
@@ -62,6 +62,9 @@ export function assessmentOutcome(assessment: Assessment, settings: Pick<Setting
 const DEFAULT_RULES = [
   { id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Explicit requests to correct a typo, wording, punctuation or existing translation. Preserve product promises and business meaning.' },
   { id: 'visual', name: 'Visual fixes', enabled: true, instruction: 'Explicit implementation requests for local spacing, alignment, overflow or styling, with a specified target or an objectively established existing standard/correct state to restore. Locating an element or calling it inconsistent, unattractive or hard to understand does not establish a target. Do not invent visual style, information hierarchy, rendering or interaction decisions. No redesign, new interaction or behavior. A known spacing defect does not authorize adjacent undefined restyling; assess only a clearly separable authorized scope. If direction or scope is unsettled, observe only: no acknowledgement, worker or unsolicited question.' },
+  // The reason a local MSP signal may be acted on at all: an experience says what to do with it. Without this rule an
+  // installed bundle admits events and then ignores every one of them, which reads as "installed but does nothing".
+  { id: 'msp-local', name: 'Local MSP events', enabled: true, instruction: 'Any event from the local MSP source is in scope for assessment. When the Trigger carries an experience block, follow it by its trust level. An event that no experience covers is not admissible.' },
 ]
 /** An assessment rule; its instruction may also specify PR reviewers and whether to wait for their approval. */
 export const RuleSchema = z.object({ id: RuleIdSchema, name: z.string().trim().min(1).max(LIMITS.ruleName), enabled: z.boolean(),
@@ -76,24 +79,42 @@ export const AdmissionRowSchema: z.ZodType<AdmissionRow> = z.object({ listedUnad
 export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema)
 export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}) }).catchall(z.unknown())
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>
+/** Local MSP signals arrive with no sender, so the admission table is the only thing that can let them in; default it open for this Source alone. Parsed, since a `default` value is used as-is and would otherwise lack the `allowed` list. */
+const DEFAULT_SOURCES: Record<string, SourcePolicy> = { msp: SourcePolicySchema.parse({ admission: { ambient: { unlistedUnaddressed: 'inferred' } } }) }
 export const PolicyConfigSchema = z.object({
   rules: z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs').default(DEFAULT_RULES),
-  sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourcePolicySchema).default({}),
+  sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourcePolicySchema).default(DEFAULT_SOURCES),
 }).strict()
 export const EvalConfigSchema = z.object({
-  mode: z.enum(['off', 'observe', 'auto']).default('observe'),
+  // A fresh install acts on what its experiences authorize; switching to `observe` costs one setting and is how a new
+  // operator tunes noise down, while starting in observe makes every installation look broken (it accepts nothing).
+  mode: z.enum(['off', 'observe', 'auto']).default('auto'),
   timeoutSeconds: z.number().int().min(LIMITS.evalTimeoutSeconds.min).max(LIMITS.evalTimeoutSeconds.max).default(120),
   model: RoleModelSchema.nullable().default(null),
 }).strict()
 const CommandNameSchema = z.string().regex(/^[A-Za-z0-9._-]+$/).refine(name => name !== '.' && name !== '..', 'Not a command name')
   .refine(name => !WORKER_COMMANDS.includes(name), `${WORKER_COMMANDS.join(', ')} cannot be blocked`)
-/** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, and blocked commands. */
+/** Residency of a finished ticket: whether it stays open for its next work item, and the cleaning rules that rotate it. */
+export const ResidentConfigSchema = z.object({
+  // Off unless a deployment turns it on: a semi-resident worker keeps its session warm between work items, which is a
+  // deployment's choice, not a change every installation should take on upgrade.
+  enabled: z.boolean().default(RESIDENT_RULES.enabled),
+  // A resident worker rotates after ten finished items, a week, an error, or a filled context, so one ticket never becomes
+  // an unbounded session; 0 disables the item count and the context rule respectively.
+  maxRounds: z.number().int().min(0).max(1000).default(RESIDENT_RULES.maxRounds),
+  maxContextPercent: z.number().min(0).max(100).default(RESIDENT_RULES.maxContextPercent),
+  weekly: z.boolean().default(RESIDENT_RULES.weekly),
+  onError: z.boolean().default(RESIDENT_RULES.onError),
+  onScenarioChange: z.boolean().default(RESIDENT_RULES.onScenarioChange),
+}).strict()
+/** Executor settings: worker model, concurrency, ticket directory root (empty defaults to `<stateDir>/work`), `prepare` command, blocked commands, and residency. */
 export const ExecutorConfigSchema = z.object({
   model: RoleModelSchema.nullable().default(null),
   maxWorkers: z.number().int().min(LIMITS.maxWorkers.min).max(LIMITS.maxWorkers.max).default(3),
   directory: z.string().trim().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty for <stateDir>/work').default(''),
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
+  resident: ResidentConfigSchema.default(() => ResidentConfigSchema.parse({})),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({
@@ -188,6 +209,7 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
   }
   return {
     version, paused: settings.paused, evalTimeoutMs: settings.eval.timeoutSeconds * 1000,
+    resident: settings.executor.resident,
     gate(trigger: Trigger, thread, tickets) {
       if (!trigger.human) return machineGate(trigger)
       const allowed = allowedSender(settings, trigger.actor)

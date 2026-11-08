@@ -53,13 +53,16 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 /**
- * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills, its todo list and
- * subagents. It gets no other tool the profile has, whenever it was registered: none that asks or shows a person something,
+ * The DSH tools an Executor Session works with: files, search, the shell and its jobs, the web, skills, its todo list,
+ * subagents, and the experience library — a worker that learns something reusable records it where the next one reads it.
+ * It gets no other tool the profile has, whenever it was registered: none that asks or shows a person something,
  * changes the profile, schedules work or starts goals outside the worker slots, the pause and a person's hold, starts or
- * messages other Sessions, or edits documents.
+ * messages other Sessions, or edits documents. Experience tools are read and create only: curating or disabling a shared
+ * lesson stays with the main Session.
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
-  'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+  'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent',
+  'experience_list', 'experience_read', 'experience_create']
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -260,7 +263,12 @@ export class Sessions {
     const register = this.registerTool(agent, binding)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
+      // `restrict` refuses a name the Session did not inherit, so keep only the tools this profile actually provides —
+      // the same filter `workOnly` applies. A profile without a shell of the wanted name (Windows `pwsh`, a preset
+      // without `read_image`) would otherwise fail to create the main Session at all.
+      const allow = ['skill', process.platform === 'win32' ? 'pwsh' : 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill']
+        .filter(name => agent.ctx.tools.get(name, scopeParentOf(agent)))
+      binding.disposers.push(agent.ctx.tools.restrict({ allow }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
