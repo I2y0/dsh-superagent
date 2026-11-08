@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, afterAll } from 'vitest'
-import { matchesPath, resolveForTest, sceneFromForTest } from '../src/app/auto-route.ts'
+import { loadAutoRoute, matchesPath, resolveForTest, sceneFromForTest } from '../src/app/auto-route.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'scene-from-path-'))
 const qqDir = join(root, '3-scenes', 'qq')
@@ -84,5 +84,51 @@ describe('resolveForTest —— 场景进 payload，交给既有的 sceneDirecto
   it('★ 路径不在 file.** 里 → undefined', () => {
     const other = { ...signal(join(qqDir, 'inbox', 'a.md')), meta: { mspPath: 'notify.message', mspPayload: { name: 'a.md', path: join(qqDir, 'inbox', 'a.md') } } }
     expect(resolveForTest(other, rule)).toBeUndefined()
+  })
+})
+
+// ★ 2026-11-09 补：上面 11 条都是**手工构造规则对象**，绕过了 zod schema。
+//   真跑的时候规则是从 auto-route.json 经 AutoRouteConfigSchema 解析出来的 ——
+//   如果 schema 把 paths / sceneFromPath 吃掉（或 .strict() 拒绝它们），
+//   上面那 11 条全绿也没用。这一组走**真的 loadAutoRoute**。
+describe('schema 往返 —— 规则是从 JSON 解析出来的，不是手写的对象', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'scene-from-path-config-'))
+  const file = join(dir, 'auto-route.json')
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('★ paths / sceneFromPath / actor:"" / human:false 能活着穿过 schema', () => {
+    writeFileSync(file, JSON.stringify({
+      enabled: true, source: 'msp', sender: 'seat', humanOnly: false,
+      rules: [{ id: 'nene-inbox', paths: ['file.**'], sceneFromPath: true, actor: '', human: false, rule: 'msp-local' }],
+    }))
+    const config = loadAutoRoute(dir)
+    const rule = config?.rules[0]
+    expect(rule?.paths).toEqual(['file.**'])
+    expect(rule?.sceneFromPath).toBe(true)
+    expect(rule?.actor).toBe('')
+    expect(rule?.human).toBe(false)
+  })
+
+  it('★ 只有 paths、没有 prefix 也没有 phrase —— 必须被接受（放宽后的 refine）', () => {
+    writeFileSync(file, JSON.stringify({
+      enabled: true, rules: [{ id: 'only-paths', paths: ['file.**'], rule: 'msp-local' }],
+    }))
+    expect(loadAutoRoute(dir)?.rules[0]?.id).toBe('only-paths')
+  })
+
+  it('★ 三样都没有的规则 —— 必须被拒（规则说不清替谁说话）', () => {
+    writeFileSync(file, JSON.stringify({ enabled: true, rules: [{ id: 'says-nothing', rule: 'msp-local' }] }))
+    expect(loadAutoRoute(dir)).toBeUndefined()
+  })
+
+  it('★ 解析出来的规则真的能派场景（端到端到 resolveTrigger）', () => {
+    writeFileSync(file, JSON.stringify({
+      enabled: true, humanOnly: false,
+      rules: [{ id: 'nene-inbox', paths: ['file.**'], sceneFromPath: true, actor: '', human: false, rule: 'msp-local' }],
+    }))
+    const parsed = loadAutoRoute(dir)!.rules[0]!
+    const r = resolveForTest(signal(join(qqDir, 'inbox', '0001-a.md')), parsed)
+    expect(r?.how).toBe('scene')
+    expect(r?.detail).toBe('qq')
   })
 })
