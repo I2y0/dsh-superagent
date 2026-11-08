@@ -1,0 +1,88 @@
+// 工单 0019-B：按信号路径派场景（`/3-scenes/<id>/` → {id, dir}）
+//
+// 为什么单独一个 spec：这条规则要能「不靠 payload 塞字段就把活派给对的场景」，
+// 而它的失败方式很安静 —— 推不出场景时票会退到 execution root，场景就散了，没人会报错。
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { describe, expect, it, afterAll } from 'vitest'
+import { matchesPath, resolveForTest, sceneFromForTest } from '../src/app/auto-route.ts'
+
+const root = mkdtempSync(join(tmpdir(), 'scene-from-path-'))
+const qqDir = join(root, '3-scenes', 'qq')
+const tokenDir = join(root, '3-scenes', 'token')
+mkdirSync(qqDir, { recursive: true })
+mkdirSync(tokenDir, { recursive: true })
+afterAll(() => rmSync(root, { recursive: true, force: true }))
+
+/** 一条只按路径说话的规则：无发送者、非人、盯 `file.**`、场景从路径推。 */
+const rule = {
+  id: 'nene-inbox', actor: '', human: false, paths: ['file.**'], sceneFromPath: true,
+  prefixes: [], phrases: [], senders: [], chatTypes: [],
+  rule: 'msp-local', worktree: 'scene', payloadScope: true, otherwise: 'card' as const,
+}
+
+/** 一条 `file.created` 机器信号：actor 空、human false、payload 只有 name/path/bytes。 */
+const signal = (file: string) => ({
+  id: 'trigger-1', source: 'msp', human: false, at: new Date().toISOString(), text: '',
+  threads: [{ source: 'msp', id: 'file.created' }],
+  actor: { source: 'msp', id: '' },
+  meta: { mspPath: 'file.created', mspPayload: { name: file.split(/[\\/]/).pop(), path: file, bytes: 12 } },
+})
+
+describe('matchesPath —— 和 Source 同一套 glob 语义', () => {
+  it('file.** 覆盖 file.created 与更深层', () => {
+    expect(matchesPath('file.**', 'file.created')).toBe(true)
+    expect(matchesPath('file.**', 'file')).toBe(true)
+    expect(matchesPath('file.**', 'file.a.b')).toBe(true)
+  })
+  it('不粘连前缀，不误伤别的路径', () => {
+    expect(matchesPath('file.**', 'filewalk.created')).toBe(false)
+    expect(matchesPath('file.**', 'notify.message')).toBe(false)
+  })
+  it('file.* 只多一段', () => {
+    expect(matchesPath('file.*', 'file.created')).toBe(true)
+    expect(matchesPath('file.*', 'file.a.b')).toBe(false)
+  })
+})
+
+describe('sceneFromForTest —— 从路径推场景', () => {
+  it('推得出场景 id 和目录', () => {
+    const scene = sceneFromForTest(signal(join(qqDir, 'inbox', '0001-a.md')))
+    expect(scene?.id).toBe('qq')
+    expect(scene?.dir.replaceAll('\\', '/')).toContain('/3-scenes/qq')
+  })
+  it('两个不同场景各自推对', () => {
+    expect(sceneFromForTest(signal(join(qqDir, 'inbox', 'a.md')))?.id).toBe('qq')
+    expect(sceneFromForTest(signal(join(tokenDir, 'inbox', 'b.md')))?.id).toBe('token')
+  })
+  it('★ 路径里没有 /3-scenes/ → 推不出（退回前缀兜底，不是报错）', () => {
+    expect(sceneFromForTest(signal(join(root, 'Downloads', 'Report.pdf')))).toBeUndefined()
+  })
+  it('★ 目录不存在 → 推不出（不开一张指向不存在目录的票）', () => {
+    const ghost = join(root, '3-scenes', 'ghost', 'inbox', 'x.md')
+    expect(sceneFromForTest(signal(ghost))).toBeUndefined()
+  })
+})
+
+describe('resolveForTest —— 场景进 payload，交给既有的 sceneDirectory', () => {
+  it('★ 命中 → how=scene，payload.scene={id,dir}', () => {
+    const r = resolveForTest(signal(join(qqDir, 'inbox', '0001-a.md')), rule)
+    expect(r?.how).toBe('scene')
+    expect(r?.detail).toBe('qq')
+    const scene = r?.payload.scene as { id: string; dir: string } | undefined
+    expect(scene?.id).toBe('qq')
+    expect(scene?.dir.replaceAll('\\', '/')).toContain('/3-scenes/qq')
+  })
+  it('★ title 用文件名兜底（watcher 的 payload 没有 title）', () => {
+    const r = resolveForTest(signal(join(qqDir, 'inbox', '0007-my-letter.md')), rule)
+    expect(r?.title).toBe('0007-my-letter.md')
+  })
+  it('★ 路径不含场景 → undefined（不抢这条信号）', () => {
+    expect(resolveForTest(signal(join(root, 'Downloads', 'a.pdf')), rule)).toBeUndefined()
+  })
+  it('★ 路径不在 file.** 里 → undefined', () => {
+    const other = { ...signal(join(qqDir, 'inbox', 'a.md')), meta: { mspPath: 'notify.message', mspPayload: { name: 'a.md', path: join(qqDir, 'inbox', 'a.md') } } }
+    expect(resolveForTest(other, rule)).toBeUndefined()
+  })
+})

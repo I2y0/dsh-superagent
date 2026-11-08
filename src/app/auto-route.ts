@@ -24,7 +24,7 @@
  * to the normal candidate card.
  */
 import { readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { z } from 'zod'
 import type { Candidate } from '../core/index.ts'
 import type { Assessment, Settings } from '../policy.ts'
@@ -37,6 +37,20 @@ const AutoRouteRuleSchema = z.object({
   prefixes: z.array(z.string().trim().min(1)).default([]),
   /** Phrases in `payload.text` that hand work over (“让影子去”, “派个 worker”), compared case-insensitively. */
   phrases: z.array(z.string().trim().min(1).max(40)).default([]),
+  /**
+   * Signal paths this rule speaks for, as MSP globs (`file.**`). Empty speaks for any path.
+   *
+   * A local file watcher publishes `file.created` with no title and no phrase in it: the path is the only thing that
+   * says what arrived. Filtering on it keeps this rule from claiming every machine signal the Source admits.
+   */
+  paths: z.array(z.string().trim().min(1)).default([]),
+  /**
+   * Derive the scene from the signal's own path instead of the payload (`/3-scenes/<id>/...` → `{id, dir}`).
+   *
+   * A watcher knows a file appeared, not which scene it belongs to; the path already carries that, and deriving it here
+   * keeps the dispatcher from having to repeat the layout in every payload.
+   */
+  sceneFromPath: z.boolean().default(false),
   /** `payload.sender` values (QQ/Feishu ids) this rule speaks for; empty speaks for any sender. */
   senders: z.array(z.string().trim().min(1)).default([]),
   /** `payload.chatType` values (such as `private`) this rule speaks for; empty speaks for any chat. */
@@ -61,8 +75,8 @@ const AutoRouteRuleSchema = z.object({
    * usual, `ignore` decides it with no ticket and no card because the chat path that published it answers the person.
    */
   otherwise: z.enum(['card', 'ignore']).default('card'),
-}).strict().refine(rule => rule.prefixes.length > 0 || rule.phrases.length > 0,
-  'A rule needs at least one title prefix or one text phrase')
+}).strict().refine(rule => rule.prefixes.length > 0 || rule.phrases.length > 0 || rule.paths.length > 0,
+  'A rule needs at least one title prefix, one text phrase, or one signal path')
 export const AutoRouteConfigSchema = z.object({
   enabled: z.boolean().default(true),
   /** Source and, when set, the actor that may use auto-route; the seat's dispatches are `msp` from `seat`. */
@@ -137,7 +151,63 @@ function speaksFor(trigger: Candidate['triggers'][number], rule: AutoRouteRule, 
   const chatType = typeof payload.chatType === 'string' ? payload.chatType : ''
   if (rule.senders.length > 0 && !rule.senders.includes(sender)) return undefined
   if (rule.chatTypes.length > 0 && !rule.chatTypes.includes(chatType)) return undefined
+  // A rule that names signal paths speaks only for those: a watcher publishes from a path that says what arrived, and a
+  // phrase or title may be absent entirely.
+  if (rule.paths.length > 0 && !rule.paths.some(pattern => matchesPath(pattern, signalPath(trigger)))) return undefined
   return payload
+}
+
+/** The signal path a Trigger arrived on (`file.created`, `work.nene.qq.message`), or `''` when it carried none. */
+function signalPath(trigger: Candidate['triggers'][number]): string {
+  const path = trigger.meta?.mspPath
+  return typeof path === 'string' ? path : ''
+}
+
+/**
+ * Whether an MSP signal-path glob matches a path, with the same semantics the Source uses: `**` is everything, `x.**`
+ * is `x` and everything below it, `x.*` is exactly one more segment.
+ *
+ * Kept here rather than imported: this decides routing, and a routing rule must not change with the wire protocol.
+ */
+export function matchesPath(pattern: string, path: string): boolean {
+  if (pattern === '**' || pattern === '*') return true
+  if (pattern === path) return true
+  if (pattern.endsWith('.**')) {
+    const base = pattern.slice(0, -3)
+    return path === base || path.startsWith(base + '.')
+  }
+  if (pattern.endsWith('.*')) {
+    const base = pattern.slice(0, -2)
+    const rest = path.startsWith(base + '.') ? path.slice(base.length + 1) : null
+    return rest !== null && rest.length > 0 && !rest.includes('.')
+  }
+  return false
+}
+
+/**
+ * The scene a signal's own path names: `.../3-scenes/<id>/...` → `{ id, dir }`.
+ *
+ * The directory must be absolute and must exist, by the same test the dispatcher's `payload.scene.dir` goes through
+ * (see `sceneDirectory`): a stale or malformed path falls back to the ticket directory under the execution root rather
+ * than failing the launch, and a ticket is never aimed at a directory that is not there.
+ *
+ * @returns the scene, or `undefined` when the path names none or the directory is missing
+ */
+const dirOf = (posixPath: string): string => {
+  // The probe was normalised to `/`; Node accepts forward slashes on every platform this runs on.
+  return posixPath.replace(/\/+$/, '')
+}
+
+function sceneFrom(trigger: Candidate['triggers'][number]): { id: string; dir: string } | undefined {
+  const payload = payloadOf(trigger)
+  const fromPayload = typeof payload?.path === 'string' ? payload.path : ''
+  const probe = (fromPayload || signalPath(trigger)).split(String.fromCharCode(92)).join('/')
+  const match = /(^|\/)3-scenes\/([A-Za-z0-9_-]+)(\/|$)/.exec(probe)
+  if (!match) return undefined
+  const id = match[2]!
+  const end = probe.indexOf('/3-scenes/') + '/3-scenes/'.length + id.length
+  const dir = dirOf(probe.slice(0, end))
+  return isAbsolute(dir) && statSync(dir, { throwIfNoEntry: false })?.isDirectory() ? { id, dir } : undefined
 }
 
 /**
@@ -160,7 +230,7 @@ export function matchedPhrase(text: string, phrases: readonly string[]): string 
 }
 
 /** One Trigger's resolution: the rule that settles it, and whether that opens a ticket or only closes the message. */
-interface Resolution { rule: AutoRouteRule; decision: 'accept' | 'silent'; how: 'prefix' | 'phrase'; detail: string; title: string; payload: Record<string, unknown> }
+interface Resolution { rule: AutoRouteRule; decision: 'accept' | 'silent'; how: 'prefix' | 'phrase' | 'scene'; detail: string; title: string; payload: Record<string, unknown> }
 
 /** The rule that settles one Trigger, or `undefined` when it is the seat's to decide. */
 function resolveTrigger(trigger: Candidate['triggers'][number], config: AutoRouteConfig): Resolution | undefined {
@@ -171,8 +241,17 @@ function resolveTrigger(trigger: Candidate['triggers'][number], config: AutoRout
     if (!payload) continue
     // An explicit opt-out in the payload wins over every rule.
     if (payload.autoRoute === false) return undefined
-    const title = typeof payload.title === 'string' ? payload.title.trim() : ''
+    // A watcher's payload names a file, not a dispatch: fall back to it so a path-derived rule still has something to
+    // name the ticket with.
+    const named = typeof payload.name === 'string' ? payload.name.trim() : ''
+    const title = (typeof payload.title === 'string' ? payload.title.trim() : '') || (rule.sceneFromPath ? named : '')
     if (!title) return undefined
+    // A scene from the path is the hardest evidence there is: the layout itself says which scene the file belongs to, so
+    // it wins over a prefix or a phrase someone wrote by hand.
+    if (rule.sceneFromPath) {
+      const scene = sceneFrom(trigger)
+      if (scene) return { rule, decision: 'accept', how: 'scene', detail: scene.id, title, payload: { ...payload, scene } }
+    }
     const prefix = rule.prefixes.find(item => title.startsWith(item))
     if (prefix) return { rule, decision: 'accept', how: 'prefix', detail: prefix, title, payload }
     const text = typeof payload.text === 'string' ? payload.text : ''
@@ -183,6 +262,13 @@ function resolveTrigger(trigger: Candidate['triggers'][number], config: AutoRout
   }
   return silent
 }
+
+/** The scene a signal's path names, for a test to call directly (see `sceneFrom`). */
+export const sceneFromForTest = (trigger: Candidate['triggers'][number]): { id: string; dir: string } | undefined => sceneFrom(trigger)
+
+/** One Trigger resolved against a single rule, for a test to call directly (see `resolveTrigger`). */
+export const resolveForTest = (trigger: Candidate['triggers'][number], rule: AutoRouteRule): Resolution | undefined =>
+  resolveTrigger(trigger, { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule] })
 
 /** The resolution every Trigger of one Eval agrees on, or `undefined` when the seat should decide the batch. */
 function resolveCandidate(candidate: Candidate, config: AutoRouteConfig): Resolution | undefined {
