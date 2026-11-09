@@ -107,7 +107,7 @@ export class MasterAssessor implements Assessor {
       const candidate = this.host.engine.candidate(triggerId)
       if (candidate?.evalId !== evalId) return
       const settings = this.host.settings()
-      const choice = autoRouteAssessment(candidate, settings, loadAutoRoute(this.host.deployment.stateDir),
+      const choice = autoRouteAssessment(candidate, settings, loadAutoRoute(this.host.deployment.stateDir, message => this.host.warn(message)),
         message => this.host.warn(message))
       let outcome
       try { outcome = choice && assessmentOutcome(choice.assessment, settings, candidate.strength) } catch { outcome = undefined }
@@ -121,7 +121,7 @@ export class MasterAssessor implements Assessor {
   /** Enqueues the work that carries a candidate toward a decision: auto-route when configured for it, else the main Session's card. */
   request(candidate: Candidate): void {
     const triggerId = candidate.triggers[0]!.id
-    const route = autoRouteAssessment(candidate, this.host.settings(), loadAutoRoute(this.host.deployment.stateDir),
+    const route = autoRouteAssessment(candidate, this.host.settings(), loadAutoRoute(this.host.deployment.stateDir, message => this.host.warn(message)),
       message => this.host.warn(message))
     if (route) this.host.effects.enqueue('route', candidate.evalId, { triggerId })
     else this.host.effects.enqueue('assessment', candidate.evalId, { triggerId })

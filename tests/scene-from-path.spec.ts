@@ -160,3 +160,64 @@ describe('反推失败要留话（不许静默）', () => {
     expect(missed[0]).toContain('Report.pdf')       // 带 payload.path
   })
 })
+
+// ★ 0025 ①：配置写错不许静默瘫掉 —— 2026-11-09 一个多余的 `enabled` 键让整个 auto-route 关了，半天没人知道。
+describe('loadAutoRoute 报错要出声', () => {
+  const dir3 = mkdtempSync(join(tmpdir(), 'auto-route-report-'))
+  afterAll(() => rmSync(dir3, { recursive: true, force: true }))
+
+  it('★ 规则里多一个键 → 返回 undefined，并且报出文件路径和错误原文', () => {
+    writeFileSync(join(dir3, 'auto-route.json'), JSON.stringify({
+      enabled: true,
+      rules: [{ id: 'bad', paths: ['file.**'], rule: 'msp-local', enabled: true }],
+    }))
+    const said: string[] = []
+    const config = loadAutoRoute(dir3, (m) => said.push(m))
+    expect(config).toBeUndefined()
+    expect(said.length).toBe(1)
+    expect(said[0]).toContain('auto-route.json')      // 文件路径
+    expect(said[0]).toContain('enabled')              // 错误原文里点到了那个键
+  })
+
+  it('★ 文件不存在 → 不报（那是「没配规则」，不是故障）', () => {
+    const missing = join(dir3, 'nope')
+    mkdirSync(missing, { recursive: true })
+    const said: string[] = []
+    expect(loadAutoRoute(missing, (m) => said.push(m))).toBeUndefined()
+    expect(said.length).toBe(0)
+  })
+
+  it('★ 配置合法 → 不报', () => {
+    writeFileSync(join(dir3, 'auto-route.json'), JSON.stringify({
+      enabled: true, rules: [{ id: 'ok', paths: ['file.**'], rule: 'msp-local' }],
+    }))
+    const said: string[] = []
+    expect(loadAutoRoute(dir3, (m) => said.push(m))?.rules[0]?.id).toBe('ok')
+    expect(said.length).toBe(0)
+  })
+})
+
+// ★ 0025 ②：reason 文案三种各说各的。场景命中被写成 "dispatch phrase" 藏了一整天（2026-11-09）。
+describe('reason 文案分三种', () => {
+  const dir4 = mkdtempSync(join(tmpdir(), 'reason-wording-'))
+  afterAll(() => rmSync(dir4, { recursive: true, force: true }))
+  const settings = { policy: { rules: [{ id: 'msp-local', enabled: true }, { id: 'copy', enabled: true }] } } as never
+  const reasonFor = (candidate: unknown, rule: unknown) =>
+    (autoRouteAssessment(candidate as never, settings,
+      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule as never] }) as never as
+      { assessment: { rule_assessments: { rule_id: string; reason: string }[] } } | undefined)
+      ?.assessment.rule_assessments.find(item => item.rule_id === 'msp-local')?.reason
+
+  it('★ 场景命中 → 说「names the scene」，绝不说 dispatch phrase', () => {
+    const rule = { id: 'nene-inbox', paths: ['file.**'], sceneFromPath: true, actor: '', human: false, rule: 'msp-local', prefixes: [], phrases: [], senders: [], chatTypes: [], worktree: 'scene', payloadScope: true, otherwise: 'card' }
+    const reason = reasonFor({ triggers: [signal(join(qqDir, 'inbox', 'a.md'))] }, rule)
+    expect(reason).toContain('names the scene')
+    expect(reason).not.toContain('dispatch phrase')
+  })
+
+  it('★ 标题前缀命中 → 说「carries the title prefix」', () => {
+    const rule = { id: 'qq', prefixes: ['[QQ]'], phrases: [], paths: [], senders: [], chatTypes: [], rule: 'msp-local', worktree: 'qq', payloadScope: true, otherwise: 'card' }
+    const t = { ...signal(join(qqDir, 'inbox', 'a.md')), human: true, actor: { source: 'msp', id: 'seat' }, meta: { mspPath: 'human.message', mspPayload: { title: '[QQ] 帮我看看', text: '[QQ] 帮我看看' } } }
+    expect(reasonFor({ triggers: [t] }, rule)).toContain('carries the title prefix')
+  })
+})

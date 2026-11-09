@@ -106,8 +106,11 @@ let cached: { file: string; mtimeMs: number; config: AutoRouteConfig } | undefin
  * Read the deployment's auto-route rules.
  * @returns the parsed rules, or `undefined` when the file is missing or invalid. An invalid file turns auto-route off
  * rather than failing an Eval: the candidate card still reaches the main Session, so the work is not lost.
+ * @param report told why the file was rejected. A rules file that does not parse turns the whole feature off, and
+ * silently: on 2026-11-09 an extra key in one rule did exactly that and cost half a day, because nothing anywhere said
+ * so. A missing file is not a fault and reports nothing.
  */
-export function loadAutoRoute(stateDir: string): AutoRouteConfig | undefined {
+export function loadAutoRoute(stateDir: string, report?: (message: string) => void): AutoRouteConfig | undefined {
   const file = autoRouteFile(stateDir)
   try {
     const mtimeMs = statSync(file).mtimeMs
@@ -115,7 +118,12 @@ export function loadAutoRoute(stateDir: string): AutoRouteConfig | undefined {
     const config = AutoRouteConfigSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
     cached = { file, mtimeMs, config }
     return config
-  } catch {
+  } catch (error) {
+    // Only a file that is there and wrong is worth saying out loud; an absent one means "no rules configured".
+    if (statSync(file, { throwIfNoEntry: false })) {
+      report?.(`auto-route ${file} 读不了，整个 auto-route 已关闭：`
+        + `${error instanceof Error ? error.message : String(error)}`)
+    }
     cached = undefined
     return undefined
   }
@@ -275,6 +283,19 @@ export const sceneFromForTest = (trigger: Candidate['triggers'][number]): { id: 
 export const resolveForTest = (trigger: Candidate['triggers'][number], rule: AutoRouteRule): Resolution | undefined =>
   resolveTrigger(trigger, { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule] })
 
+/**
+ * How a resolution came about, said in a way a Decision's reason reads.
+ *
+ * Three ways exist and each is different evidence: a prefix and a phrase are things a person wrote into the dispatch,
+ * a scene is read off the signal's own path. Saying "dispatch phrase" for a scene hid a working path for a whole day
+ * (2026-11-09): the reason said phrase while the resolver had matched the path.
+ */
+function howSaid(how: Resolution['how']): string {
+  if (how === 'prefix') return 'carries the title prefix'
+  if (how === 'phrase') return 'carries the dispatch phrase'
+  return 'names the scene'
+}
+
 /** The resolution every Trigger of one Eval agrees on, or `undefined` when the seat should decide the batch. */
 function resolveCandidate(candidate: Candidate, config: AutoRouteConfig,
   onMiss?: (message: string) => void): Resolution | undefined {
@@ -318,7 +339,7 @@ export function autoRouteAssessment(candidate: Candidate, settings: Settings, co
     matched: item.id === rule.rule,
     reason: item.id === rule.rule
       ? resolution.decision === 'accept'
-        ? `Auto-route ${rule.id}: «${title}» carries ${resolution.how === 'prefix' ? 'the title prefix' : 'the dispatch phrase'} ${resolution.detail}`
+        ? `Auto-route ${rule.id}: «${title}» ${howSaid(resolution.how)} ${resolution.detail}`
         : `Auto-route ${rule.id}: «${title}» hands no work to a worker, so the chat path answers it`
       : `Auto-route ${rule.id} settled by rule ${rule.rule} instead`,
   }))
