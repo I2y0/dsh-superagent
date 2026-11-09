@@ -390,10 +390,11 @@ it('stops a ticket on a person\'s instruction for good, and resumes an ended one
   await receive(request)
   expect(await route({ kind: 'stop', ticket_id: ticket.id, trigger_id: request.id }))
     .toMatchObject({ decision: 'stop', reason: 'Human asked to stop', ticket: { ticket_id: ticket.id, state: 'stopped' } })
-  // The end says it was a person's stop once: no reason that repeats the outcome, none copied onto the Assignment.
+  // The end says it was a person's stop once (no reason that repeats the outcome) — the Assignment records the same word,
+  // because a reader of one Assignment (a project owner reading `assignmentOutcome`) cannot see the ticket's end.
   const stopped = runtime.store.tickets.get(ticket.id)!
   expect(stopped.ended).toEqual({ at: expect.any(String), by: 'human', outcome: 'stopped' })
-  expect(stopped.assignments[0]).not.toHaveProperty('endedReason')
+  expect(stopped.assignments[0]).toMatchObject({ state: 'ended', endedReason: 'stopped' })
   expect(agents.get(sessionId)!.cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: false })
   // A stop withdraws the mandate: later messages wait as context, and only new work restarts it.
   const guest = feishu('6', '继续吧', { mentions: [], root_id: 'om_1', sender_id: 'ou_guest' })

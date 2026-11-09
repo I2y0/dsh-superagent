@@ -449,8 +449,10 @@ export class Tickets extends EnginePart {
     // An end dated earlier, such as a PR's merge, does not move the ticket's last change back.
     ticket.ended = { at, by, outcome, ...why }; ticket.undelivered = []; ticket.updatedAt = this.now()
     delete ticket.attention; delete ticket.delivery
-    // The Assignments the end stops end with it; the ticket's end says why.
-    for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }
+    // The Assignments the end stops end with it; the ticket's end says why — and so does the Assignment, because a reader of
+    // one Assignment (a project owner, see `assignmentOutcome`) cannot see the ticket's end. `??=` leaves an Assignment that
+    // already recorded its own reason alone. 2026-11-09: a stopped ticket's Assignment used to read as `done`.
+    for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at; assignment.endedReason ??= reason ?? outcome }
     this.repo.tickets.save(ticket)
     this.letGo(ticketId, waiting, left)
     this.emit('ticket.ended', { ticketId, by, outcome, ...why, ...reported ? { reported: true } : {} })
