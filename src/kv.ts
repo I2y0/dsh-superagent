@@ -39,6 +39,12 @@ export const KV = {
   /** Per-Source resolved display names mapping a named ID (such as a Feishu chat ID) to its display name. */
   sources: { labels: family<Record<string, string>, [source: string]>('source-labels:') },
   /**
+   * nene-inbox Source: the `size:mtime` already delivered for each absolute file path. This is what makes a restart
+   * safe in both directions — a letter that arrived while nothing was watching is still new (no record), and a letter
+   * that was delivered is not sent again. Marking every file present at startup as handled lost the first kind silently.
+   */
+  neneInbox: { delivered: family<string, [path: string]>('nene-inbox-delivered:') },
+  /**
    * GitHub Source: notification cursor and pending retries; per-Issue/PR read cursor shared by notification and polled reads;
    * per-stream cursor, start times by kind, and ETag; default-branch CI state; and per-PR CI fingerprint and revision (`revision`
    * counts reported CI changes so each produces a distinct Trigger ID).

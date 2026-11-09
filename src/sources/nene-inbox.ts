@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 
 import { type SourceContext, sourceContext } from './host.ts'
+import { KV } from '../kv.ts'
 import type { SourceKind } from './kind.ts'
 import type { Trigger } from '../core/index.ts'
 
@@ -204,6 +205,9 @@ export function wanted(watched: Watched, name: string): boolean {
 /** A file whose size stopped changing; `bytes` and `at` describe it as it was accepted. */
 interface Settled { name: string; path: string; bytes: number; at: string }
 
+/** What a delivered record holds; an edited file changes its mtime, so it counts as a new letter rather than a repeat. */
+const stampOf = (bytes: number, at: string): string => `${bytes}:${at}`
+
 /**
  * Watches the configured directories and reports each file it settles on.
  *
@@ -234,7 +238,11 @@ export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<vo
       detail: `${watched.role}: ${settled.name} ${settled.bytes}B → ${trigger.meta.mspPath}`
         + `（线程 ${trigger.threads[0]?.id}）· 已交 ${seen} 个`,
     })
-    Promise.resolve(ctx.receive(trigger)).catch((error: unknown) => {
+    Promise.resolve(ctx.receive(trigger)).then(() => {
+      // Recorded only after the Engine took it: a delivery that throws must stay "not delivered", so the next sweep
+      // tries again instead of the letter disappearing into a ledger entry for work that never happened.
+      ctx.state.set(KV.neneInbox.delivered(settled.path), stampOf(settled.bytes, settled.at))
+    }, (error: unknown) => {
       ctx.report(SOURCE, {
         state: 'error',
         detail: `${watched.role}: ${settled.name} 交不进 Engine：${error instanceof Error ? error.message : String(error)}`,
@@ -249,15 +257,24 @@ export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<vo
       if (!wanted(watched, name)) continue
       const absolutePath = join(watched.path, name)
       let size: number
+      let mtime: string
       try {
         const stat = statSync(absolutePath)
         // A subdirectory is skipped unless this entry recurses; `readdirSync` above already flattens when it does not.
         if (!stat.isFile()) continue
         size = stat.size
+        mtime = stat.mtime.toISOString()
       } catch { continue }
+      // Delivered before with this exact size and mtime: the only case that is skipped outright. Anything else is a
+      // letter the Engine has not seen — including one that arrived while nothing was watching, which is what a
+      // startup used to swallow.
+      if (ctx.state.get(KV.neneInbox.delivered(absolutePath)) === stampOf(size, mtime)) {
+        state.set(absolutePath, 'taken')
+        continue
+      }
       const before = state.get(absolutePath)
       if (before === 'taken' || before === 'settling') continue
-      // First sight records the size: a file that existed before startup is never treated as new.
+      // First sight records the size, so the settle timer below can tell a finished file from a half-written one.
       if (before === undefined || before !== size) { state.set(absolutePath, size); continue }
       state.set(absolutePath, 'settling')
       const timer = setTimeout(() => {
@@ -274,17 +291,18 @@ export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<vo
   }
 
   /**
-   * Marks the files already in a directory as taken, so a start does not re-open what it already handled, and returns
-   * the closers for that directory's watcher.
+   * Opens the watcher for one directory and returns its closer.
+   *
+   * Files already present are deliberately **not** marked as handled: whether one has been delivered is a question the
+   * ledger answers per file, in `scan`. Marking the whole directory at startup is what made a letter that arrived while
+   * the host was down disappear without a trace (2026-11-09) — the pane was told nothing and the Engine never saw it.
    */
   const open = (watched: Watched): (() => void)[] => {
     const opened: (() => void)[] = []
-    let names: string[] = []
-    try { names = readdirSync(watched.path, { recursive: watched.recursive, encoding: 'utf8' }) as string[] } catch {
+    try { readdirSync(watched.path, { recursive: watched.recursive, encoding: 'utf8' }) } catch {
       ctx.report(SOURCE, { state: 'error', detail: `${watched.role}: 目录读不了 ${watched.path}` })
       return opened
     }
-    for (const name of names) state.set(join(watched.path, String(name)), 'taken')
     try {
       const watcher = watchDirectory(watched.path, { recursive: watched.recursive }, () => scan(watched))
       opened.push(() => { try { watcher.close() } catch { /* already gone */ } })

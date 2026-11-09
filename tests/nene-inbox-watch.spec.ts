@@ -13,8 +13,9 @@ import { SOURCE, watch } from '../src/sources/nene-inbox.ts'
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-/** 一个只够这个 Source 用的假上下文：记下每一次 receive 与每一次 report。 */
-function fakeContext(dirs: { path: string; role: string; extensions: string[]; recursive: boolean; human: boolean; actor: string }[], settleMs = 100) {
+/** 一个只够这个 Source 用的假上下文：记下每一次 receive 与每一次 report。`kv` 跨两次启动复用，就是那条已投递台账。 */
+function fakeContext(dirs: { path: string; role: string; extensions: string[]; recursive: boolean; human: boolean; actor: string }[], settleMs = 100,
+  kv = new Map<string, unknown>()) {
   const received: Trigger[] = []
   const reported: { state: string; detail: string }[] = []
   const ctx = {
@@ -22,8 +23,13 @@ function fakeContext(dirs: { path: string; role: string; extensions: string[]; r
     config: () => ({ dirs, settleMs }),
     receive: (trigger: Trigger) => { received.push(trigger) },
     report: (_entry: string, health: { state: string; detail: string }) => { reported.push({ state: health.state, detail: health.detail }) },
+    state: {
+      get: (key: string) => kv.get(key),
+      set: (key: string, value: unknown) => { if (value === undefined) kv.delete(key); else kv.set(key, value) },
+      keys: () => [...kv.keys()],
+    },
   }
-  return { ctx: ctx as unknown as SourceContext, received, reported }
+  return { ctx: ctx as unknown as SourceContext, received, reported, kv }
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -70,7 +76,7 @@ describe('监听循环', () => {
     expect(received).toHaveLength(1)
   })
 
-  it('★ 启动时已经存在的文件不交（重启不重开）', async () => {
+  it('★ 启动时已经存在、还没交过的文件 → 照交（重启不吞信）', async () => {
     const root = mkdtempSync(join(tmpdir(), 'nene-inbox-existing-'))
     roots.push(root)
     writeFileSync(join(root, '0001-old.md'), 'old', 'utf8')
@@ -78,11 +84,37 @@ describe('监听循环', () => {
 
     const controller = new AbortController()
     const running = watch(ctx, controller.signal)
-    await sleep(1600)
+    await sleep(3000)                                   // 兜底扫描 1s 一跳，预存文件要两跳 + settle
 
     controller.abort()
     await running
-    expect(received).toHaveLength(0)
+    // 2026-11-09：这里以前断言 0 —— 那个行为让「进程没在看的时候落进来的信」永久消失。
+    expect(received).toHaveLength(1)
+    expect(received[0]!.meta.mspPath).toBe('file.created.qq')
+  })
+
+  it('★ 交过的文件，再起一次不再交（台账认的是 size+mtime，不是"启动时在不在"）', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'nene-inbox-ledger-'))
+    roots.push(root)
+    const dirs = [{ path: root.replaceAll('\\', '/'), role: 'qq', extensions: [], recursive: false, human: false, actor: 'seat' }]
+    writeFileSync(join(root, '0001-a.md'), 'x', 'utf8')
+
+    const first = fakeContext(dirs)
+    const controller = new AbortController()
+    const running = watch(first.ctx, controller.signal)
+    await sleep(3000)
+    controller.abort()
+    await running
+    expect(first.received).toHaveLength(1)
+
+    // 第二次启动：同一个台账，同一个文件 —— 一个字都不该再交。
+    const second = fakeContext(dirs, 100, first.kv)
+    const again = new AbortController()
+    const rerun = watch(second.ctx, again.signal)
+    await sleep(1500)                                   // 台账命中在第一跳就跳过，不用等 settle
+    again.abort()
+    await rerun
+    expect(second.received).toHaveLength(0)
   })
 
   it('★ 目录没配 → 状态是 paused，什么都不交', async () => {
@@ -111,6 +143,7 @@ describe('配置热更新', () => {
       config: () => ({ dirs, settleMs: 100 }),
       receive: (trigger: Trigger) => { received.push(trigger) },
       report: () => {},
+      state: { get: () => undefined, set: () => {}, keys: () => [] },
     } as unknown as SourceContext
 
     const controller = new AbortController()
@@ -139,6 +172,7 @@ describe('配置热更新', () => {
       config: () => ({ dirs, settleMs: 100 }),
       receive: (trigger: Trigger) => { received.push(trigger) },
       report: () => {},
+      state: { get: () => undefined, set: () => {}, keys: () => [] },
     } as unknown as SourceContext
 
     const controller = new AbortController()
