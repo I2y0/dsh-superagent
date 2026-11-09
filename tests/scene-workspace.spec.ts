@@ -6,21 +6,35 @@ import { DshExecutor, sceneDirectory, ticketExecution } from '../src/executor/ds
 import type { ExecutorHost } from '../src/executor/dsh.ts'
 import type { Ticket, Trigger } from '../src/core/index.ts'
 import { SettingsSchema } from '../src/policy.ts'
-import { mspTrigger } from '../src/sources/msp.ts'
 
-const HUMAN_PATHS = ['human.message', 'notify.message']
 let root: string
 let scene: string
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'scene-workspace-'))
-  // The scene directory a seat dispatch names, as `派活.mjs --scene qq` resolves it.
+  // The scene directory a seat dispatch names, as an inbox letter resolves it.
   scene = join(root, '3-scenes', 'qq')
   mkdirSync(scene, { recursive: true })
 })
 afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
-/** The MSP signal a seat dispatch publishes, carrying the scene it resolved. */
-const signal = (payload: unknown): Trigger => mspTrigger({ node: 'seat', path: 'human.message', at: '2026-11-04T06:47:54.612Z', payload }, { humanPaths: HUMAN_PATHS })!
+/**
+ * The Trigger a seat dispatch arrives as: a person-authored signal on `human.message` carrying the scene it resolved.
+ *
+ * Built here instead of imported: the msp Source was deleted 2026-11-09, but `sceneDirectory` and the Executor still read
+ * the same `meta` keys (`mspPath` / `mspPayload`), so this test keeps its subject and drops only its dependency.
+ */
+const triggerOf = (path: string, payload: unknown): Trigger => ({
+  id: `test:${path}:${JSON.stringify(payload ?? null).slice(0, 40)}`,
+  source: 'msp',
+  threads: [{ source: 'msp', id: 'human.message' }],
+  actor: { source: 'msp', id: 'seat' },
+  human: true,
+  addressed: 'direct',
+  at: '2026-11-04T06:47:54.612Z',
+  text: `${path}\n${JSON.stringify(payload ?? {}).slice(0, 2000)}`,
+  meta: { mspPath: path, mspNode: 'seat', mspPayload: payload },
+})
+const signal = (payload: unknown): Trigger => triggerOf('human.message', payload)
 
 function ticketOf(trigger: Trigger, id = '33f72e72d5ebe0d28d6948900b853fcd'): Ticket {
   return {

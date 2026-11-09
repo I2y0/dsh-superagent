@@ -104,11 +104,11 @@ curl -s -H "x-orchestrator-request: 1" http://127.0.0.1:3080/orchestrator/api/so
 ```json
 [
   {"id":"github","state":"error", ...},          // 没配仓库是正常的
-  {"id":"msp","state":"setup","health":[{"state":"ready","detail":"listening: **"}]}
+  {"id":"nene-inbox","state":"ready","health":[{"detail":"监听 N 个目录"}]}
 ]
 ```
 
-`msp` 的 health 出现 `listening: **` 就是装好了。
+`nene-inbox` 起来（`state` 是 `ready`、看得到目录数）就是装好了。MSP 那条 Source 2026-11-09 已经删掉，清单里不该再出现 `msp`。
 
 ---
 
@@ -119,10 +119,8 @@ curl -s -H "x-orchestrator-request: 1" http://127.0.0.1:3080/orchestrator/api/so
 | 侧栏没有 Superagent | profile 里没有 `dsh-superagent` 这一行 | `dsh plugin --profile superagent add link:$PWD` |
 | 面板「没有响应」 | 上一个实例被强杀，状态锁还没过期（30 秒）；或 stateDir 指到了两个实例共用的目录 | 等 30 秒再 `start`（新版会自己等）；两个 profile 用不同的 `stateDir` |
 | `EADDRINUSE 127.0.0.1:3080` | 另一个实例（常见：WSL 里的）占着端口 | 停掉它，或 `wsl --shutdown` |
-| `spawn python ENOENT` | 用了旧版（带 Python 桥的） | 确认在 `main` 分支：`git log --oneline -1` 应是 `msp-ts` 版本 |
 | `ModuleNotFoundError: fcntl` | 用 `bash` 跑了 Python 脚本 | 用 `python3 scripts/dsh-superagent ...` |
-| `bridge exited (2)` | 旧版缺 `msp-py` | 同上，换到 main 分支 |
-| 信号收到但 `received: 0` | 准入策略拦掉了 | `policy.sources.msp.admission.ambient.unlistedUnaddressed = inferred` |
+| 文件投进信箱但没反应 | 那条 Source 没起，或目录不在配置里 | `curl .../orchestrator/api/sources` 看 `nene-inbox`；目录清单在面板 → Sources |
 
 ---
 
@@ -140,12 +138,7 @@ curl -s -H "x-orchestrator-request: 1" "http://127.0.0.1:3080/orchestrator/api/d
 
 ## 8. 装完之后可以做的
 
-- 在 `~/.dsh/tacit/experiences/` 放一条 `.md`（格式见 README），下一轮信号命中时会自动注入
-- 发一条测试信号：
-
-```sh
-node -e "const {MSPNode}=require('./vendor/msp-ts/dist/index.js');const n=new MSPNode('demo');n.start().then(()=>{n.publish('file.modified',{name:'test.txt'});setTimeout(()=>n.stop(),800)})"
-```
+- 往任一被监控的信箱目录投一封 `.md`：
 
 - 看 `decisions` 里有没有新记录，那就是它「看见了」的证据
 

@@ -373,10 +373,6 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/nene-inbox.ts` | The nene-inbox kind and plugin entry, exported as `./nene-inbox-watch`: a new file in each configured directory becomes a senderless Trigger under the `ambient` admission row, with the directory's configured `role` appended to the signal path (`file.created.<role>`) so a routing rule decides what it means. No polling |
-| `src/sources/msp.ts` | The MSP kind and plugin entry, exported as `./msp-watch`: local node signals pushed as newline-delimited JSON by `python/msp_bridge.py`, mapped to senderless Triggers under the `ambient` admission row. No polling |
-| `src/sources/experiences.ts` | Experience files: frontmatter parsing, `trigger` and `condition` matching, and the experience block a matched signal carries into the assessment or worker prompt |
-| `src/sources/experience-tools.ts` | The five model-facing experience tools — list, read, create, update, disable — writing `<experienceDir>/<id>.md` under a slug-only id |
-| `src/sources/msp-act.ts` | Patch one, reach: `msp_nodes` lists reachable peers and what they declare, `msp_publish` emits a signal on any path, and `msp_call` invokes a peer's declared tool. Every capability is a node and every action is a signal, so a new device needs no adapter |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
 | `src/sources/feishu-channel.ts` | The Feishu Channel: topic replies, `sent` or `gone` |
@@ -406,7 +402,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts`, `src/sources/feishu.ts` and `src/sources/msp.ts` are the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch` and `./msp-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with Feishu and MSP disabled. `nene-inbox` is built as `./nene-inbox-watch` too, but a profile inserts it rather than the bundle: a row of the same id in both layers left the bundle's `disabled: true` in force, so the plugin never loaded.
+`src/sources/github.ts` and `src/sources/feishu.ts` are the entries of the two remote Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts them, with Feishu disabled; the local mailbox Source (the msp one, and its experience tools) was deleted on 2026-11-09. `nene-inbox` is built as `./nene-inbox-watch` too, but a profile inserts it rather than the bundle: a row of the same id in both layers left the bundle's `disabled: true` in force, so the plugin never loaded.
 
 ## Tests
 
@@ -416,8 +412,6 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/stage.spec.ts` | The Ticket stages, row by row |
 | `tests/resident.spec.ts` | Semi-resident Tickets: each cleaning rule, a Ticket that stays open and takes new work, and its rotation with a handoff |
 | `tests/policy.spec.ts` | Source scope, the gate, the admission table, Mandate revalidation, the Policy version, settings migrations and assessment outcomes |
-| `tests/msp.test.mjs` | The MSP Source: signal→Trigger mapping, the senderless machine actor, the ambient admission row, deterministic ids |
-| `tests/experience-tools.spec.ts` | The experience tools: the level a create lands on, the refused downgrade, and ids that stay inside the experience directory |
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
@@ -439,7 +433,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
 | `tests/scene-workspace.spec.ts` | A dispatch that names a scene: the directory a Ticket works in, and the fallbacks of a payload without one |
 | `tests/nene-inbox-watch.spec.ts` | The nene-inbox loop against a real temporary directory and a fake SourceContext: a new file becomes one Trigger ingested once with the role in its signal path, a file already there at startup is never ingested, an empty configuration reports `paused`, and a configuration saved while the loop runs takes effect without a restart — a directory added starts being watched, one removed stops |
-| `tests/notify-exit.spec.ts` | The third auto-route outcome: a `notify` rule hands a file to a scene's Session and opens no Ticket, the scene coming from the signal path's role rather than the file path; a rule may name its own Source so an msp mailbox and a nene-inbox mailbox coexist; the scene-to-Session mapping read from `areas.json`, and the notice that names only the file |
+| `tests/notify-exit.spec.ts` | The third auto-route outcome: a `notify` rule hands a file to a scene's Session and opens no Ticket, the scene coming from the signal path's role rather than the file path; a rule may name its own Source so two mailboxes of different kinds coexist; the scene-to-Session mapping read from `areas.json`, and the notice that names only the file |
 | `tests/nene-inbox.spec.ts` | The nene-inbox config shape: an empty default that receives nothing, a role that must be a plain name, unknown keys refused; how a role becomes the signal path `file.created.<role>`; why one Thread per file rather than per role; the Trigger a file becomes (senderless by default, the compatibility keys the rules and the Executor read), which file names count, and a `human` directory where a file stands for a person's request with a named account so dispatch keeps its explicit strength |
 | `tests/nene-inbox-apply.spec.ts` | What the plugin entry does before it watches anything: `apply()` registers the kind with the source registry and keeps that registration as its own effect, disposable on unload. It pins a call that was once removed together with the temporary log line wrapped around it, leaving the plugin loaded, silent and receiving nothing |
 | `tests/scene-from-path.spec.ts` | A signal whose path names the scene (`/3-scenes/<id>/`): the glob it is matched against, the directory it resolves to, and the two cases that resolve to nothing (a path outside the layout, a directory that is not there) |

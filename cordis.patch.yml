@@ -7,8 +7,6 @@
     - id: dsh-superagent-github
       name: dsh-superagent/github-watch
     # Optional Feishu Source; requires configuring a bot CLI after enabling.
-    - id: dsh-superagent-msp
-      name: dsh-superagent/msp-watch
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch
       disabled: true

@@ -1019,4 +1019,4 @@ interface SourceInstance<C extends Record<string, unknown> = Record<string, unkn
   config: C;
 }
 //#endregion
-export { Tally as _, Retry as a, inject as c, pollRound as d, pollThreads as f, SourceRegistry as g, commentTrigger as h, GithubConfig as i, name as l, GithubComment as m, SourceKind as n, apply as o, pollTicketPulls as p, SourceContext as r, githubKind as s, Localized as t, pollFailure as u };
+export { apply as a, name as c, pollThreads as d, pollTicketPulls as f, Tally as g, SourceRegistry as h, Retry as i, pollFailure as l, commentTrigger as m, SourceContext as n, githubKind as o, GithubComment as p, GithubConfig as r, inject as s, SourceKind as t, pollRound as u };
