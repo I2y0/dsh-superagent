@@ -65,7 +65,7 @@ describe('kind 的形状', () => {
 })
 
 describe('一个文件 → 一条 Trigger', () => {
-  const watched = { path: 'C:/nene/3-scenes/qq/inbox', role: 'qq', extensions: [] as string[], recursive: false }
+  const watched = { path: 'C:/nene/3-scenes/qq/inbox', role: 'qq', extensions: [] as string[], recursive: false, human: false }
   const trigger = buildTrigger(watched, '0001-a.md', 'C:/nene/3-scenes/qq/inbox/0001-a.md', 744, '2026-11-09T10:00:00.000Z')
 
   it('★ actor 必须是空的 —— 机器事件不能冒充人的请求', () => {
@@ -96,10 +96,10 @@ describe('一个文件 → 一条 Trigger', () => {
 })
 
 describe('哪些文件算数', () => {
-  const base = { path: 'C:/x', role: 'qq', recursive: false }
+  const base = { path: 'C:/x', role: 'qq', recursive: false, human: false }
   it('默认全收', () => {
-    expect(wanted({ ...base, extensions: [] }, 'a.md')).toBe(true)
-    expect(wanted({ ...base, extensions: [] }, 'a.zip')).toBe(true)
+    expect(wanted({ ...base, extensions: [], human: false }, 'a.md')).toBe(true)
+    expect(wanted({ ...base, extensions: [], human: false }, 'a.zip')).toBe(true)
   })
   it('配了扩展名就只收那些（大小写不敏感，带不带点都行）', () => {
     const md = { ...base, extensions: ['.MD'] }
@@ -107,8 +107,8 @@ describe('哪些文件算数', () => {
     expect(wanted(md, 'a.zip')).toBe(false)
   })
   it('点开头的不收（编辑器临时文件 / 系统文件）', () => {
-    expect(wanted({ ...base, extensions: [] }, '.DS_Store')).toBe(false)
-    expect(wanted({ ...base, extensions: [] }, '.0001-a.md.swp')).toBe(false)
+    expect(wanted({ ...base, extensions: [], human: false }, '.DS_Store')).toBe(false)
+    expect(wanted({ ...base, extensions: [], human: false }, '.0001-a.md.swp')).toBe(false)
   })
 })
 
@@ -144,5 +144,31 @@ describe('准入的表行', () => {
 
   it('policy 的 schema 收得下空对象（allowed 默认空）', () => {
     expect(neneInboxKind.policy!.schema.parse({})).toEqual({ allowed: [] })
+  })
+})
+
+// ★ 派活要保住 explicit。文件事件天生是 inferred（没有发送者、没点名），
+//   所以「这个目录算人提的要求」必须由配置说出来，否则派活会从「立刻生效」变成「排队等模型」。
+describe('human 目录：文件代表一个人提的要求', () => {
+  const base = { path: 'C:/nene/2-shared/dispatch', role: 'dispatch', extensions: [], recursive: false }
+
+  it('★ human: true + actor → actor 是那个账号、human、addressed=direct', () => {
+    const t = buildTrigger({ ...base, human: true, actor: 'seat' }, '0001.json', 'C:/nene/2-shared/dispatch/0001.json', 10, '2026-11-09T13:30:00.000Z')
+    expect(t.human).toBe(true)
+    expect(t.addressed).toBe('direct')
+    expect(t.actor).toEqual({ source: SOURCE, id: 'seat' })
+  })
+
+  it('★ 不写 human（默认）→ 仍然是机器事件，冒充不了人', () => {
+    const t = buildTrigger({ ...base, human: false }, '0001.md', 'C:/nene/2-shared/dispatch/0001.md', 10, '2026-11-09T13:30:00.000Z')
+    expect(t.human).toBe(false)
+    expect(t.addressed).toBeUndefined()
+    expect(t.actor.id).toBe('')
+  })
+
+  it('★ human 但没写 actor → actor 是空串（名单里没有它，就进不来）', () => {
+    const t = buildTrigger({ ...base, human: true }, '0001.json', 'C:/nene/2-shared/dispatch/0001.json', 10, '2026-11-09T13:30:00.000Z')
+    expect(t.human).toBe(true)
+    expect(t.actor.id).toBe('')
   })
 })

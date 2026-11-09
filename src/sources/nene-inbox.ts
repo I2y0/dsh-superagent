@@ -42,6 +42,16 @@ const WatchedSchema = z.object({
       .map(item => item.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)),
   /** Whether files inside subdirectories count too. Off by default: a mailbox is a flat directory. */
   recursive: z.boolean().default(false),
+  /**
+   * Whether a file here stands for something a person asked for.
+   *
+   * A dispatch a person sends has to stay `explicit`: it is routed without an assessment, and it may start work under a
+   * rule that only admits explicit requests. A file event is `inferred` by nature — no sender, nothing addressed — so a
+   * directory that carries a person's own request has to say so.
+   */
+  human: z.boolean().default(false),
+  /** The account a `human` directory speaks for; it must be on the Source's allowed list. Empty means no account. */
+  actor: z.string().trim().min(1).optional(),
 }).strict()
 
 export const NeneInboxConfigSchema = z.object({
@@ -91,6 +101,8 @@ export const neneInboxKind: SourceKind<NeneInboxConfig> = {
       // `optional`: an empty cell means every file counts. Without it the form refuses to save an empty one, which made
       // the panel unusable for the only case this kind needs first (watch everything in a mailbox).
       { key: 'extensions', label: { zh: '只收这些扩展名（空=全部）', en: 'Extensions' }, type: 'text', optional: true },
+      { key: 'human', label: { zh: '这个目录算人提的要求（1/0）', en: 'A file here is a request from a person (1/0)' }, type: 'text', optional: true },
+      { key: 'actor', label: { zh: '算谁的账号', en: 'Account' }, type: 'text', optional: true },
     ] },
     { key: 'settleMs', label: { zh: '文件稳定多久才认 / 毫秒', en: 'Settle time / ms' }, type: 'number', advanced: true, min: 100, max: 60_000 },
   ],
@@ -170,8 +182,11 @@ export function buildTrigger(watched: Watched, name: string, absolutePath: strin
     source: SOURCE,
     threads: [{ source: SOURCE, id: threadOf(watched.role, name) }],
     // A machine event has no sender: an empty id keeps it from ever standing in for a person's request.
-    actor: { source: SOURCE, id: '' },
-    human: false,
+    // A human directory speaks for its configured account and is addressed to the agent, exactly as the seat's own
+    // dispatch is; every other directory is a sender-less machine event that can only ever be inferred.
+    actor: { source: SOURCE, id: watched.human ? (watched.actor ?? '') : '' },
+    human: watched.human,
+    addressed: watched.human ? 'direct' as const : undefined,
     at,
     text: `${absolutePath}
 ${JSON.stringify(payload)}`,
