@@ -320,6 +320,24 @@ type AssignmentState = 'pending' | 'running' | 'ended';
  * ready (`ready`), a person must act to unblock or recover it (`blocked` or `failed`), or nothing is left to do (`dropped`).
  */
 type ReportState = 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped';
+/**
+ * What became of an Assignment, in a closed set — what a project owner needs, and free-form reasons cannot give.
+ *
+ * `done`: its worker finished and reported. `failed`: it stopped on an error, or its worker reported failure. `abandoned`:
+ * it was stopped, replaced, interrupted by a restart, or dropped — nothing of it is left to finish.
+ */
+type AssignmentOutcome = 'done' | 'failed' | 'abandoned';
+/**
+ * The outcome of an ended Assignment, with the untouched reason as its note.
+ *
+ * 2026-11-09, requirement: an owner has to tell "finished" from "died" from "given up" without asking anyone.
+ * Deliberately a reading of what an Assignment already records (`endedReason`, `report.state`) rather than a new field to
+ * keep in sync: an Assignment that ended without anyone writing this down is exactly the case it has to cover.
+ */
+declare function assignmentOutcome(assignment: Pick<Assignment, 'state' | 'endedReason' | 'report'>): {
+  outcome?: AssignmentOutcome;
+  note?: string;
+};
 /** Binding between a ticket and one executor instance. */
 interface Assignment {
   id: string;
@@ -813,4 +831,4 @@ interface Repositories {
 //#region src/core/intake.d.ts
 type ReceiveResult = 'stored' | 'duplicate' | 'filtered';
 //#endregion
-export { TriggerDisposition as $, ChannelRef as A, ReportState as B, rotationReason as C, Assignment as D, AdmissionCell as E, Follow as F, ThreadFact as G, Strength as H, FollowupRecords as I, Ticket as J, ThreadFacts as K, Mandate as L, DecisionKind as M, Evaluation as N, AssignmentState as O, Execution as P, Trigger as Q, MandateBasis as R, rotationOf as S, ActorRef as T, Text as U, Residency as V, Thread as W, TicketInput as X, TicketEndBy as Y, TicketOutcome as Z, RESIDENT_WEEK_MS as _, Config as _t, DomainEvent as a, reached as at, idleResident as b, GateResult as c, settled as ct, Policy as d, waitsForPerson as dt, followupOwners as et, ReplyStatus as f, REASONS as ft, RESIDENT_RULES as g, said as gt, SourceScope as h, reasonText as ht, Candidate as i, liveTicket as it, Decision as j, Attention as k, OutboundMessage as l, threadKey as lt, ScopeResult as m, ReasonCode as mt, AssessmentOutcome as n, latestAssignment as nt, DomainEvents as o, readUntil as ot, Repositories as p, Reason as pt, ThreadRef as q, Assessor as r, latestReport as rt, Executor as s, runningAssignment as st, ReceiveResult as t, isoTime as tt, Outbox as u, ticketOutcome as ut, ResidentRules as v, Deployment as vt, AcceptMode as w, rotationLabel as x, RotationReason as y, DeploymentConfig as yt, PolicyEffect as z };
+export { Trigger as $, Attention as A, PolicyEffect as B, rotationReason as C, Assignment as D, AdmissionCell as E, Execution as F, Thread as G, Residency as H, Follow as I, ThreadRef as J, ThreadFact as K, FollowupRecords as L, Decision as M, DecisionKind as N, AssignmentOutcome as O, Evaluation as P, TicketOutcome as Q, Mandate as R, rotationOf as S, ActorRef as T, Strength as U, ReportState as V, Text as W, TicketEndBy as X, Ticket as Y, TicketInput as Z, RESIDENT_WEEK_MS as _, reasonText as _t, DomainEvent as a, latestReport as at, idleResident as b, Deployment as bt, GateResult as c, readUntil as ct, Policy as d, threadKey as dt, TriggerDisposition as et, ReplyStatus as f, ticketOutcome as ft, RESIDENT_RULES as g, ReasonCode as gt, SourceScope as h, Reason as ht, Candidate as i, latestAssignment as it, ChannelRef as j, AssignmentState as k, OutboundMessage as l, runningAssignment as lt, ScopeResult as m, REASONS as mt, AssessmentOutcome as n, followupOwners as nt, DomainEvents as o, liveTicket as ot, Repositories as p, waitsForPerson as pt, ThreadFacts as q, Assessor as r, isoTime as rt, Executor as s, reached as st, ReceiveResult as t, assignmentOutcome as tt, Outbox as u, settled as ut, ResidentRules as v, said as vt, AcceptMode as w, rotationLabel as x, DeploymentConfig as xt, RotationReason as y, Config as yt, MandateBasis as z };

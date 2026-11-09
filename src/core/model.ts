@@ -214,6 +214,32 @@ export type AssignmentState = 'pending' | 'running' | 'ended'
  * ready (`ready`), a person must act to unblock or recover it (`blocked` or `failed`), or nothing is left to do (`dropped`).
  */
 export type ReportState = 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped'
+
+/**
+ * What became of an Assignment, in a closed set — what a project owner needs, and free-form reasons cannot give.
+ *
+ * `done`: its worker finished and reported. `failed`: it stopped on an error, or its worker reported failure. `abandoned`:
+ * it was stopped, replaced, interrupted by a restart, or dropped — nothing of it is left to finish.
+ */
+export type AssignmentOutcome = 'done' | 'failed' | 'abandoned'
+
+/**
+ * The outcome of an ended Assignment, with the untouched reason as its note.
+ *
+ * 2026-11-09, requirement: an owner has to tell "finished" from "died" from "given up" without asking anyone.
+ * Deliberately a reading of what an Assignment already records (`endedReason`, `report.state`) rather than a new field to
+ * keep in sync: an Assignment that ended without anyone writing this down is exactly the case it has to cover.
+ */
+export function assignmentOutcome(assignment: Pick<Assignment, 'state' | 'endedReason' | 'report'>):
+{ outcome?: AssignmentOutcome; note?: string } {
+  if (assignment.state !== 'ended') return {}
+  const reason = assignment.endedReason ?? ''
+  const note = reason || assignment.report?.summary || ''
+  if (assignment.report?.state === 'failed' || /fail|error|crash|throw/i.test(reason)) return { outcome: 'failed', note }
+  if (/stop|interrupt|retr|drop|cancel|rotat|scenario|restart|supersed|replace/i.test(reason)) return { outcome: 'abandoned', note }
+  return { outcome: 'done', note }
+}
+
 /** Binding between a ticket and one executor instance. */
 export interface Assignment {
   id: string

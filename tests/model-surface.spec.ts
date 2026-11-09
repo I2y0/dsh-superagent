@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import { latestAssignment } from '../src/core/index.ts'
+import { assignmentOutcome, latestAssignment } from '../src/core/index.ts'
 import { promptParts } from '../src/app/prompts.ts'
 import { RESOURCES } from '../src/app/resources.ts'
 import { TICKET_STATES } from '../src/app/cards.ts'
@@ -423,4 +423,25 @@ it('lists in the main Session\'s Policy section exactly the enabled rules, as th
   expect(listed).toEqual(ruleLines())
   // The drive disabled the visual rule and changed the copy rule's instruction.
   expect(listed).toEqual([expect.stringMatching(/^- .* \(copy\): .*Keep the wording short\.$/)])
+})
+
+/**
+ * 2026-11-09 需求：负责人要能从票面上分清「做完了 / 死了 / 放弃了」，不能靠猜那句自由文本。
+ * 见 `assignmentOutcome`：它只读 assignment 已经记下的东西，不新增要同步的字段。
+ */
+it('turns an ended Assignment into the closed set an owner reads: done, failed or abandoned', () => {
+  const ended = (endedReason: string, report?: { state: 'progress' | 'ready' | 'failed'; summary: string; at: string }) =>
+    assignmentOutcome({ state: 'ended', endedReason, report } as never)
+
+  expect(ended('reported').outcome).toBe('done')
+  expect(ended('completed').outcome).toBe('done')
+  expect(ended('spawn failed: ENOENT').outcome).toBe('failed')
+  expect(ended('', { state: 'failed', summary: 'tests red', at: '2026-11-09T00:00:00.000Z' })).toMatchObject({ outcome: 'failed' })
+  expect(ended('stopped').outcome).toBe('abandoned')
+  expect(ended('interrupted by a host restart').outcome).toBe('abandoned')
+  expect(ended('retried').outcome).toBe('abandoned')
+
+  // 自由文本原样留作 note，不丢信息；没结束的 assignment 什么都没有。
+  expect(ended('spawn failed: ENOENT').note).toBe('spawn failed: ENOENT')
+  expect(assignmentOutcome({ state: 'running' } as never)).toEqual({})
 })
