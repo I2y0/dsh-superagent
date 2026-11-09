@@ -372,6 +372,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
+| `src/sources/nene-inbox.ts` | The nene-inbox kind and plugin entry, exported as `./nene-inbox-watch`: a new file in each configured directory becomes a senderless Trigger under the `ambient` admission row, with the directory's configured `role` appended to the signal path (`file.created.<role>`) so a routing rule decides what it means. No polling |
 | `src/sources/msp.ts` | The MSP kind and plugin entry, exported as `./msp-watch`: local node signals pushed as newline-delimited JSON by `python/msp_bridge.py`, mapped to senderless Triggers under the `ambient` admission row. No polling |
 | `src/sources/experiences.ts` | Experience files: frontmatter parsing, `trigger` and `condition` matching, and the experience block a matched signal carries into the assessment or worker prompt |
 | `src/sources/experience-tools.ts` | The five model-facing experience tools — list, read, create, update, disable — writing `<experienceDir>/<id>.md` under a slug-only id |
@@ -437,6 +438,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
 | `tests/scene-workspace.spec.ts` | A dispatch that names a scene: the directory a Ticket works in, and the fallbacks of a payload without one |
+| `tests/nene-inbox.spec.ts` | The nene-inbox config shape: an empty default that receives nothing, a role that must be a plain name, unknown keys refused; how a role becomes the signal path `file.created.<role>`, and why one Thread per file rather than per role |
 | `tests/scene-from-path.spec.ts` | A signal whose path names the scene (`/3-scenes/<id>/`): the glob it is matched against, the directory it resolves to, and the two cases that resolve to nothing (a path outside the layout, a directory that is not there) |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/batch.spec.ts` | A dispatch batch: one message when its last Ticket reports, the batch a call or a `batch` field names, a lone Ticket's own report, a question or a blocked report that does not wait, and an urgent Ticket that reports at once |

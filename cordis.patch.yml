@@ -9,6 +9,10 @@
     # Optional Feishu Source; requires configuring a bot CLI after enabling.
     - id: dsh-superagent-msp
       name: dsh-superagent/msp-watch
+    # nene 信箱：把配置里每个目录的新文件变成工单信号。取代 plugins/msp-filewatch。
+    - id: dsh-superagent-nene-inbox
+      name: dsh-superagent/nene-inbox-watch
+      disabled: true
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch
       disabled: true

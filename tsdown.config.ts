@@ -7,7 +7,7 @@ const raw = { name: 'raw',
   load: (id: string) => id.endsWith('?raw') ? { code: `export default ${JSON.stringify(readFileSync(id.slice(0, -4), 'utf8'))}`, moduleType: 'js' as const }
     : undefined }
 export default defineConfig([
-  { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts', 'msp-watch': 'src/sources/msp.ts' }, outDir: 'lib', format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: true, clean: true,
+  { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts', 'msp-watch': 'src/sources/msp.ts', 'nene-inbox-watch': 'src/sources/nene-inbox.ts' }, outDir: 'lib', format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: true, clean: true,
     // `msp-ts` is vendored under `vendor/`, which a packed install does not ship: inline it so the loaded bundle needs no runtime resolution.
     deps: { neverBundle: [/^@deepseek-ai\//, 'zod', 'proper-lockfile'], alwaysBundle: ['msp-ts'] } },
   { entry: { client: 'src/client/index.tsx' }, outDir: 'lib', format: 'cjs', platform: 'browser', dts: false, clean: false, plugins: [raw],

@@ -17,6 +17,7 @@
     "./github-watch": "./lib/github-watch.js",
     "./feishu-watch": "./lib/feishu-watch.js",
     "./msp-watch": "./lib/msp-watch.js",
+    "./nene-inbox-watch": "./lib/nene-inbox-watch.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
