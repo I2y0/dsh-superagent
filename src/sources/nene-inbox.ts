@@ -49,7 +49,11 @@ const WatchedSchema = z.object({
    * rule that only admits explicit requests. A file event is `inferred` by nature — no sender, nothing addressed — so a
    * directory that carries a person's own request has to say so.
    */
-  human: z.boolean().default(false),
+  // Accepts what the panel actually sends. A `rows` text cell gives a string, so `human` arrives as "false" and a
+  // schema that insisted on a boolean made the whole save fail for every row but a stored one (2026-11-09).
+  human: z.union([z.boolean(), z.string()]).default(false)
+    .transform(value => (typeof value === 'boolean' ? value
+      : /^(1|true|yes|y|on|是)$/i.test(String(value).trim()))),
   /** The account a `human` directory speaks for; it must be on the Source's allowed list. Empty means no account. */
   actor: z.string().trim().min(1).optional(),
 }).strict()

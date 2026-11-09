@@ -172,3 +172,25 @@ describe('human 目录：文件代表一个人提的要求', () => {
     expect(t.actor.id).toBe('')
   })
 })
+
+// ★ 面板的文本单元格给字符串。布尔字段只收 boolean，会让整份保存失败
+//   （2026-11-09：加第二行起就报 dirs.1.human 无效）。
+describe('human 两种写法都收', () => {
+  const parse = (human: unknown) =>
+    NeneInboxConfigSchema.parse({ dirs: [{ path: 'C:/x', role: 'qq', human }] }).dirs[0]!.human
+
+  it('★ 表单给的字符串', () => {
+    expect(parse('false')).toBe(false)
+    expect(parse('true')).toBe(true)
+    expect(parse('1')).toBe(true)
+    expect(parse('0')).toBe(false)
+    expect(parse('')).toBe(false)
+  })
+  it('布尔照旧（JSON 直接写）', () => {
+    expect(parse(true)).toBe(true)
+    expect(parse(false)).toBe(false)
+  })
+  it('不写 → false', () => {
+    expect(parse(undefined)).toBe(false)
+  })
+})
