@@ -3,7 +3,7 @@
 // 这一层先只验纯数据（schema、信号路径、Trigger 的形状）。目录监听和 receive() 是后续步骤的事，
 // 它们要验的是「投一个文件，票开不开」—— 那是集成，不是这一份。
 import { describe, expect, it } from 'vitest'
-import { NeneInboxConfigSchema, SOURCE, neneInboxKind, signalPathOf, threadOf } from '../src/sources/nene-inbox.ts'
+import { NeneInboxConfigSchema, SOURCE, buildTrigger, neneInboxKind, signalPathOf, threadOf, wanted } from '../src/sources/nene-inbox.ts'
 
 describe('nene-inbox 的配置', () => {
   it('默认什么都不收（新装不能对机器上任何文件有反应）', () => {
@@ -61,5 +61,53 @@ describe('kind 的形状', () => {
 
   it('★ scope 恒为「全听全看、ambient 行」—— 和 msp 一样，写错了会静默不开票', () => {
     expect(neneInboxKind.scope?.({ meta: {} }, NeneInboxConfigSchema.parse({}))).toEqual({ listened: true, observed: true, row: 'ambient' })
+  })
+})
+
+describe('一个文件 → 一条 Trigger', () => {
+  const watched = { path: 'C:/nene/3-scenes/qq/inbox', role: 'qq', extensions: [] as string[], recursive: false }
+  const trigger = buildTrigger(watched, '0001-a.md', 'C:/nene/3-scenes/qq/inbox/0001-a.md', 744, '2026-11-09T10:00:00.000Z')
+
+  it('★ actor 必须是空的 —— 机器事件不能冒充人的请求', () => {
+    expect(trigger.actor).toEqual({ source: SOURCE, id: '' })
+    expect(trigger.human).toBe(false)
+    expect(trigger.addressed).toBeUndefined()
+  })
+
+  it('★ 兼容键：mspPath 是 file.created.<role>，mspPayload 带着文件的绝对路径', () => {
+    // 规则靠 mspPath 分派；sceneDirectory 靠 mspPayload.path 推场景。少一个，票就静默落到 work/task-*
+    expect(trigger.meta?.mspPath).toBe('file.created.qq')
+    expect((trigger.meta?.mspPayload as { path: string }).path).toBe('C:/nene/3-scenes/qq/inbox/0001-a.md')
+  })
+
+  it('★ 正文第一行是绝对路径（worker 靠它读信，不需要「领」）', () => {
+    expect(trigger.text.split('\n')[0]).toBe('C:/nene/3-scenes/qq/inbox/0001-a.md')
+  })
+
+  it('★ 两封不同的信 → 两条不同的线程（不会被旧票 fanout 吃掉）', () => {
+    const a = buildTrigger(watched, '0001-a.md', '/x/0001-a.md', 1, '2026-11-09T10:00:00.000Z')
+    const b = buildTrigger(watched, '0002-b.md', '/x/0002-b.md', 1, '2026-11-09T10:00:01.000Z')
+    expect(a.threads[0]?.id).not.toBe(b.threads[0]?.id)
+  })
+
+  it('id 含 role 与文件名，天然幂等', () => {
+    expect(trigger.id).toBe('nene-inbox:qq:0001-a.md')
+  })
+})
+
+describe('哪些文件算数', () => {
+  const base = { path: 'C:/x', role: 'qq', recursive: false }
+  it('默认全收', () => {
+    expect(wanted({ ...base, extensions: [] }, 'a.md')).toBe(true)
+    expect(wanted({ ...base, extensions: [] }, 'a.zip')).toBe(true)
+  })
+  it('配了扩展名就只收那些（大小写不敏感，带不带点都行）', () => {
+    const md = { ...base, extensions: ['.MD'] }
+    expect(wanted(md, 'a.md')).toBe(true)
+    expect(wanted(md, 'a.zip')).toBe(false)
+  })
+  it('点开头的不收（编辑器临时文件 / 系统文件）', () => {
+    expect(wanted({ ...base, extensions: [] }, '.DS_Store')).toBe(false)
+    expect(wanted({ ...base, extensions: [] }, '.0001-a.md.swp')).toBe(false)
   })
 })

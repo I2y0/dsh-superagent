@@ -1,8 +1,16 @@
+import { Q as Trigger } from "./intake-BVQR9ONJ.js";
 import { n as SourceKind } from "./kind-BWwRhRaX.js";
 import { Context } from "@deepseek-ai/cordis";
 import { z } from "zod";
 //#region src/sources/nene-inbox.d.ts
 declare const SOURCE = "nene-inbox";
+/** One watched directory, and what a file appearing in it means. */
+declare const WatchedSchema: z.ZodObject<{
+  path: z.ZodString;
+  role: z.ZodString;
+  extensions: z.ZodDefault<z.ZodArray<z.ZodString>>;
+  recursive: z.ZodDefault<z.ZodBoolean>;
+}, z.core.$strict>;
 declare const NeneInboxConfigSchema: z.ZodObject<{
   dirs: z.ZodDefault<z.ZodArray<z.ZodObject<{
     path: z.ZodString;
@@ -12,6 +20,7 @@ declare const NeneInboxConfigSchema: z.ZodObject<{
   }, z.core.$strict>>>;
   settleMs: z.ZodDefault<z.ZodNumber>;
 }, z.core.$strict>;
+type Watched = z.infer<typeof WatchedSchema>;
 type NeneInboxConfig = z.infer<typeof NeneInboxConfigSchema>;
 /**
  * The signal path a file from `role` arrives on.
@@ -31,5 +40,15 @@ declare const neneInboxKind: SourceKind<NeneInboxConfig>;
 declare const name = "dsh-superagent-nene-inbox";
 declare const inject: string[];
 declare function apply(ctx: Context): void;
+/**
+ * One file as a Trigger.
+ *
+ * `meta.mspPath` and `meta.mspPayload` keep the names the routing rules and the Executor already read, so nothing
+ * downstream changes while the transport does: the rule matches `file.created.<role>` and `sceneDirectory` finds the
+ * scene from `payload.path`. The keys are renamed once the msp Source is gone.
+ */
+declare function buildTrigger(watched: Watched, name: string, absolutePath: string, bytes: number, at: string): Trigger;
+/** Whether `name` is a file this entry wants: plain files only, matching one of `extensions` when any are given. */
+declare function wanted(watched: Watched, name: string): boolean;
 //#endregion
-export { NeneInboxConfig, NeneInboxConfigSchema, SOURCE, apply, inject, name, neneInboxKind, signalPathOf, threadOf };
+export { NeneInboxConfig, NeneInboxConfigSchema, SOURCE, Watched, apply, buildTrigger, inject, name, neneInboxKind, signalPathOf, threadOf, wanted };

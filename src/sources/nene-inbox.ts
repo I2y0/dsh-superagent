@@ -14,10 +14,13 @@
  * is ignored is the auto-route rule's business — a Source cannot prompt a Session, and should not try.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { readdirSync, statSync, watch as watchDirectory } from 'node:fs'
+import { join } from 'node:path'
 import { z } from 'zod'
 
 import { type SourceContext, sourceContext } from './host.ts'
 import type { SourceKind } from './kind.ts'
+import type { Trigger } from '../core/index.ts'
 
 export const SOURCE = 'nene-inbox'
 
@@ -40,6 +43,7 @@ export const NeneInboxConfigSchema = z.object({
   settleMs: z.number().int().min(100).max(60_000).default(1500),
 }).strict()
 
+export type Watched = z.infer<typeof WatchedSchema>
 export type NeneInboxConfig = z.infer<typeof NeneInboxConfigSchema>
 
 /**
@@ -99,10 +103,44 @@ export function apply(ctx: Context): void {
 }
 
 /**
- * Watches the configured directories.
+ * One file as a Trigger.
  *
- * Every step of this plan adds one piece to this loop; it starts by reporting that it has nothing to do yet, so the
- * plugin can be registered and seen in the panel before it can open a single ticket.
+ * `meta.mspPath` and `meta.mspPayload` keep the names the routing rules and the Executor already read, so nothing
+ * downstream changes while the transport does: the rule matches `file.created.<role>` and `sceneDirectory` finds the
+ * scene from `payload.path`. The keys are renamed once the msp Source is gone.
+ */
+export function buildTrigger(watched: Watched, name: string, absolutePath: string, bytes: number, at: string): Trigger {
+  const payload = { name, path: absolutePath, bytes }
+  return {
+    id: `${SOURCE}:${watched.role}:${name}`,
+    source: SOURCE,
+    threads: [{ source: SOURCE, id: threadOf(watched.role, name) }],
+    // A machine event has no sender: an empty id keeps it from ever standing in for a person's request.
+    actor: { source: SOURCE, id: '' },
+    human: false,
+    at,
+    text: `${absolutePath}
+${JSON.stringify(payload)}`,
+    meta: { mspPath: signalPathOf(watched.role), mspPayload: payload },
+  }
+}
+
+/** Whether `name` is a file this entry wants: plain files only, matching one of `extensions` when any are given. */
+export function wanted(watched: Watched, name: string): boolean {
+  if (name.startsWith('.')) return false
+  if (watched.extensions.length === 0) return true
+  const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : ''
+  return watched.extensions.some(entry => entry.replace(/^\./, '').toLowerCase() === extension)
+}
+
+/** A file whose size stopped changing; `bytes` and `at` describe it as it was accepted. */
+interface Settled { name: string; path: string; bytes: number; at: string }
+
+/**
+ * Watches the configured directories and reports each file it settles on.
+ *
+ * Until the next step calls `receive()`, every accepted file is only reported: the panel shows the Trigger a file would
+ * have produced, and nothing is opened. That is how the watcher is proved correct before it can cost anything.
  */
 async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
@@ -112,5 +150,80 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
     ctx.report(SOURCE, { state: 'paused', detail: '没有配置目录，什么都不收' })
     return
   }
-  ctx.report(SOURCE, { state: 'ready', detail: `配置了 ${config.dirs.length} 个目录（监听尚未接上）` })
+
+  /** Absolute path → the last size seen, or a marker for the two states that need no more scanning. */
+  const state = new Map<string, number | 'settling' | 'taken'>()
+  const timers = new Set<NodeJS.Timeout>()
+  const closers: (() => void)[] = []
+  let seen = 0
+
+  const accept = (watched: Watched, settled: Settled): void => {
+    const trigger = buildTrigger(watched, settled.name, settled.path, settled.bytes, settled.at)
+    seen += 1
+    ctx.report(SOURCE, {
+      state: 'ready',
+      detail: `${watched.role}: ${settled.name} ${settled.bytes}B → ${trigger.meta.mspPath}`
+        + `（线程 ${trigger.threads[0]?.id}）· 已认 ${seen} 个 · 尚未接入 Engine`,
+    })
+  }
+
+  const scan = (watched: Watched): void => {
+    let names: string[]
+    try { names = readdirSync(watched.path) } catch { return }
+    for (const name of names) {
+      if (!wanted(watched, name)) continue
+      const absolutePath = join(watched.path, name)
+      let size: number
+      try {
+        const stat = statSync(absolutePath)
+        // A subdirectory is skipped unless this entry recurses; `readdirSync` above already flattens when it does not.
+        if (!stat.isFile()) continue
+        size = stat.size
+      } catch { continue }
+      const before = state.get(absolutePath)
+      if (before === 'taken' || before === 'settling') continue
+      // First sight records the size: a file that existed before startup is never treated as new.
+      if (before === undefined || before !== size) { state.set(absolutePath, size); continue }
+      state.set(absolutePath, 'settling')
+      const timer = setTimeout(() => {
+        timers.delete(timer)
+        try {
+          const now = statSync(absolutePath)
+          if (now.size !== size) { state.set(absolutePath, now.size); return }
+          state.set(absolutePath, 'taken')
+          accept(watched, { name, path: absolutePath, bytes: size, at: now.mtime.toISOString() })
+        } catch { state.set(absolutePath, 'taken') }
+      }, config.settleMs)
+      timers.add(timer)
+    }
+  }
+
+  for (const watched of config.dirs) {
+    let names: string[] = []
+    try { names = readdirSync(watched.path, { recursive: watched.recursive, encoding: 'utf8' }) as string[] } catch {
+      ctx.report(SOURCE, { state: 'error', detail: `${watched.role}: 目录读不了 ${watched.path}` })
+      continue
+    }
+    // Files already there when the plugin starts are taken: a restart must not re-open what it already handled.
+    for (const name of names) state.set(join(watched.path, String(name)), 'taken')
+    try {
+      const watcher = watchDirectory(watched.path, { recursive: watched.recursive }, () => scan(watched))
+      closers.push(() => { try { watcher.close() } catch { /* already gone */ } })
+    } catch {
+      ctx.report(SOURCE, { state: 'error', detail: `${watched.role}: 无法监控 ${watched.path}` })
+    }
+    // `fs.watch` misses events (network drives, editors that write elsewhere then rename); a slow sweep covers it.
+    const interval = setInterval(() => scan(watched), 1000)
+    closers.push(() => clearInterval(interval))
+  }
+
+  ctx.report(SOURCE, { state: 'ready', detail: `监听 ${config.dirs.length} 个目录（尚未接入 Engine）` })
+
+  await new Promise<void>(resolve => {
+    if (signal.aborted) { resolve(); return }
+    signal.addEventListener('abort', () => resolve(), { once: true })
+  })
+  for (const close of closers) close()
+  for (const timer of timers) clearTimeout(timer)
+  timers.clear()
 }

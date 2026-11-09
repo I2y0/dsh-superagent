@@ -438,7 +438,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
 | `tests/scene-workspace.spec.ts` | A dispatch that names a scene: the directory a Ticket works in, and the fallbacks of a payload without one |
-| `tests/nene-inbox.spec.ts` | The nene-inbox config shape: an empty default that receives nothing, a role that must be a plain name, unknown keys refused; how a role becomes the signal path `file.created.<role>`, and why one Thread per file rather than per role |
+| `tests/nene-inbox.spec.ts` | The nene-inbox config shape: an empty default that receives nothing, a role that must be a plain name, unknown keys refused; how a role becomes the signal path `file.created.<role>`; why one Thread per file rather than per role; the Trigger a file becomes (senderless, the compatibility keys the rules and the Executor read), and which file names count |
 | `tests/scene-from-path.spec.ts` | A signal whose path names the scene (`/3-scenes/<id>/`): the glob it is matched against, the directory it resolves to, and the two cases that resolve to nothing (a path outside the layout, a directory that is not there) |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/batch.spec.ts` | A dispatch batch: one message when its last Ticket reports, the batch a call or a `batch` field names, a lone Ticket's own report, a question or a blocked report that does not wait, and an urgent Ticket that reports at once |
