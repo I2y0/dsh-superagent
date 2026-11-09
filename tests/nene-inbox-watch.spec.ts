@@ -96,3 +96,61 @@ describe('监听循环', () => {
     expect(reported.some(item => item.state === 'paused')).toBe(true)
   })
 })
+
+// ★ 配置改了不能要求重启：面板保存的是 Settings，watcher 每秒重读一次。
+//   2026-11-09 就是这里卡住的 —— 配置存进去了，watcher 还报「no dirs」。
+describe('配置热更新', () => {
+  it('★ 一开始没目录 → 保存之后自己开始收，不用重启', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'nene-inbox-hot-'))
+    roots.push(root)
+    const received: Trigger[] = []
+    // 会变的配置：先空，1.2 秒后出现 workshop
+    let dirs: { path: string; role: string; extensions: string[]; recursive: boolean }[] = []
+    const ctx = {
+      ready: Promise.resolve(),
+      config: () => ({ dirs, settleMs: 100 }),
+      receive: (trigger: Trigger) => { received.push(trigger) },
+      report: () => {},
+    } as unknown as SourceContext
+
+    const controller = new AbortController()
+    const running = watch(ctx, controller.signal)
+    await sleep(200)
+    expect(received).toHaveLength(0)                 // 还没配
+
+    dirs = [{ path: root.split(String.fromCharCode(92)).join('/'), role: 'workshop', extensions: [], recursive: false }]
+    await sleep(1400)                                // 让它重读到配置并开 watch
+    writeFileSync(join(root, '0001-a.md'), 'x', 'utf8')
+    await sleep(1600)
+
+    controller.abort()
+    await running
+    expect(received).toHaveLength(1)
+    expect(received[0]!.meta?.mspPath).toBe('file.created.workshop')
+  })
+
+  it('★ 目录被移出配置 → 不再收那个目录的文件', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'nene-inbox-drop-'))
+    roots.push(root)
+    const received: Trigger[] = []
+    let dirs = [{ path: root.split(String.fromCharCode(92)).join('/'), role: 'qq', extensions: [], recursive: false }]
+    const ctx = {
+      ready: Promise.resolve(),
+      config: () => ({ dirs, settleMs: 100 }),
+      receive: (trigger: Trigger) => { received.push(trigger) },
+      report: () => {},
+    } as unknown as SourceContext
+
+    const controller = new AbortController()
+    const running = watch(ctx, controller.signal)
+    await sleep(200)
+    dirs = []
+    await sleep(1300)                                // 让它关掉那个 watch
+    writeFileSync(join(root, '0002-b.md'), 'x', 'utf8')
+    await sleep(1600)
+
+    controller.abort()
+    await running
+    expect(received).toHaveLength(0)
+  })
+})

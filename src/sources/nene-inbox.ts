@@ -177,13 +177,12 @@ export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<vo
   mark('watch-start')
   await ctx.ready
   if (signal.aborted) return
-  const config = ctx.config<NeneInboxConfig>(SOURCE)
-  if (!config || config.dirs.length === 0) {
-    mark('watch-paused', 'no dirs')
-    ctx.report(SOURCE, { state: 'paused', detail: '没有配置目录，什么都不收' })
-    return
-  }
 
+  /** Reads the configuration as the registry holds it now. */
+  const readConfig = (): NeneInboxConfig | undefined => ctx.config<NeneInboxConfig>(SOURCE)
+
+  /** How long a file's size must stay put before it counts; refreshed from Settings by `sync` below. */
+  let settleMs = 1500
   /** Absolute path → the last size seen, or a marker for the two states that need no more scanning. */
   const state = new Map<string, number | 'settling' | 'taken'>()
   const timers = new Set<NodeJS.Timeout>()
@@ -233,38 +232,82 @@ export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<vo
           state.set(absolutePath, 'taken')
           accept(watched, { name, path: absolutePath, bytes: size, at: now.mtime.toISOString() })
         } catch { state.set(absolutePath, 'taken') }
-      }, config.settleMs)
+      }, settleMs)
       timers.add(timer)
     }
   }
 
-  for (const watched of config.dirs) {
+  /**
+   * Marks the files already in a directory as taken, so a start does not re-open what it already handled, and returns
+   * the closers for that directory's watcher.
+   */
+  const open = (watched: Watched): (() => void)[] => {
+    const opened: (() => void)[] = []
     let names: string[] = []
     try { names = readdirSync(watched.path, { recursive: watched.recursive, encoding: 'utf8' }) as string[] } catch {
       ctx.report(SOURCE, { state: 'error', detail: `${watched.role}: 目录读不了 ${watched.path}` })
-      continue
+      return opened
     }
-    // Files already there when the plugin starts are taken: a restart must not re-open what it already handled.
     for (const name of names) state.set(join(watched.path, String(name)), 'taken')
     try {
       const watcher = watchDirectory(watched.path, { recursive: watched.recursive }, () => scan(watched))
-      closers.push(() => { try { watcher.close() } catch { /* already gone */ } })
+      opened.push(() => { try { watcher.close() } catch { /* already gone */ } })
     } catch {
       ctx.report(SOURCE, { state: 'error', detail: `${watched.role}: 无法监控 ${watched.path}` })
     }
-    // `fs.watch` misses events (network drives, editors that write elsewhere then rename); a slow sweep covers it.
-    const interval = setInterval(() => scan(watched), 1000)
-    closers.push(() => clearInterval(interval))
+    return opened
   }
 
-  mark('watch-ready', `dirs=${config.dirs.map(d => d.role).join(',')}`)
-  ctx.report(SOURCE, { state: 'ready', detail: `监听 ${config.dirs.length} 个目录` })
+  /** Open watchers for the configuration in force; rebuilt when the configuration changes. */
+  let open_ = new Map<string, (() => void)[]>()
+
+  /**
+   * Applies the configuration as it is now.
+   *
+   * The panel writes a Source's configuration into Settings, and this loop re-reads it instead of capturing it once:
+   * otherwise a change needs a restart, which is exactly what went wrong when the first mailbox was saved and the
+   * watcher kept reporting "no dirs".
+   */
+  const sync = (): NeneInboxConfig | undefined => {
+    const config = readConfig()
+    settleMs = config?.settleMs ?? 1500
+    const next = new Map((config?.dirs ?? []).map(dir => [JSON.stringify(dir), dir]))
+    for (const [key, closers_] of open_) {
+      if (next.has(key)) continue
+      for (const close of closers_) close()
+      open_.delete(key)
+    }
+    for (const [key, watched] of next) {
+      if (open_.has(key)) continue
+      open_.set(key, open(watched))
+      mark('dir-open', `${watched.role} ${watched.path}`)
+    }
+    return config
+  }
+
+  const first = sync()
+  if (!first || first.dirs.length === 0) {
+    mark('watch-paused', 'no dirs yet — waiting for Settings')
+    ctx.report(SOURCE, { state: 'paused', detail: '还没有配置目录（面板 → Sources 里加）' })
+  } else {
+    mark('watch-ready', `dirs=${first.dirs.map(d => d.role).join(',')}`)
+    ctx.report(SOURCE, { state: 'ready', detail: `监听 ${first.dirs.length} 个目录` })
+  }
+
+  // One sweep a second does three jobs: re-read the configuration, cover the events `fs.watch` misses (network drives,
+  // editors that write elsewhere then rename), and settle files whose size stopped changing.
+  const sweep = setInterval(() => {
+    const config = sync()
+    for (const watched of config?.dirs ?? []) scan(watched)
+  }, 1000)
 
   await new Promise<void>(resolve => {
     if (signal.aborted) { resolve(); return }
     signal.addEventListener('abort', () => resolve(), { once: true })
   })
-  for (const close of closers) close()
+  clearInterval(sweep)
+  for (const closers_ of open_.values()) for (const close of closers_) close()
+  open_ = new Map()
   for (const timer of timers) clearTimeout(timer)
   timers.clear()
 }
