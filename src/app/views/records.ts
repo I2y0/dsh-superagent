@@ -127,6 +127,9 @@ export function ticketSummary(ticket: Ticket) {
     deliveryError: attribute(ticket.delivery?.error), sessionId: ticket.assignments.some(item => item.startedAt)
       ? workerSessionId(ticket.id) : '',
     directory: attribute(ticket.execution?.directory), summary: latestReport(ticket)?.summary ?? '', createdAt: ticket.createdAt,
+    // The project this ticket is a slice of, by id (2026-11-09). Shown on the line so both the list and the detail answer
+    // "which project is this?" without a second call; the ledger still owns what that project contains.
+    project: ticket.project,
     updatedAt: ticket.updatedAt }
 }
 export type TicketSummaryView = ReturnType<typeof ticketSummary>
