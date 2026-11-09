@@ -38,6 +38,25 @@ describe('the scene directory of a dispatch', () => {
   it('is the existing absolute directory the payload names', () => {
     expect(sceneDirectory(signal({ title: 'x', scene: { id: 'qq', dir: scene, memory: join(scene, 'memory.md') } }))).toBe(scene)
   })
+  // ★ 2026-11-09（0022 Q2 的回归）：执行时读的是**存储里的** trigger，
+  //   所以场景必须能从信号自己的路径推出来 —— 光在 assessment 里造一个 payload 没用，
+  //   `prepare` 拿的是 `sourceTrigger()` 读回的那一份。这条就是那次事故的钉子。
+  it('★ is derived from the signal path when the payload carries no scene', () => {
+    expect(sceneDirectory(signal({ path: join(scene, 'inbox', '0001-a.md') }))).toBe(scene)
+  })
+  it('★ derives it from a Windows-style path too', () => {
+    const win = scene.split('/').join(String.fromCharCode(92)) + String.fromCharCode(92) + 'inbox' + String.fromCharCode(92) + 'a.md'
+    expect(sceneDirectory(signal({ path: win }))).toBe(scene)
+  })
+  it('★ a path outside the layout, or a directory that is not there, derives nothing', () => {
+    expect(sceneDirectory(signal({ path: join(root, 'Downloads', 'Report.pdf') }))).toBeUndefined()
+    expect(sceneDirectory(signal({ path: join(root, '3-scenes', 'ghost', 'inbox', 'x.md') }))).toBeUndefined()
+  })
+  it('★ an explicit scene.dir still wins over the path', () => {
+    const other = join(root, '3-scenes', 'token')
+    mkdirSync(other, { recursive: true })
+    expect(sceneDirectory(signal({ scene: { dir: other }, path: join(scene, 'inbox', 'a.md') }))).toBe(other)
+  })
   it('is ignored when the payload carries no scene, or no directory in it', () => {
     expect(sceneDirectory(signal({ title: 'x' }))).toBeUndefined()
     expect(sceneDirectory(signal({ scene: 'qq' }))).toBeUndefined()

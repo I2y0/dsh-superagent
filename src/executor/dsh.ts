@@ -103,11 +103,35 @@ export function sceneDirectory(trigger: Trigger | undefined): string | undefined
   const payload = trigger?.meta?.mspPayload
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined
   const scene = (payload as Record<string, unknown>).scene
-  if (!scene || typeof scene !== 'object' || Array.isArray(scene)) return undefined
-  const directory = (scene as Record<string, unknown>).dir
-  if (typeof directory !== 'string' || !isAbsolute(directory.trim())) return undefined
-  const named = directory.trim()
-  return statSync(named, { throwIfNoEntry: false })?.isDirectory() ? named : undefined
+  const named = scene && typeof scene === 'object' && !Array.isArray(scene) ? (scene as Record<string, unknown>).dir : undefined
+  const explicit = typeof named === 'string' && isAbsolute(named.trim()) ? named.trim() : undefined
+  const directory = explicit ?? sceneDirectoryFromPath(payload as Record<string, unknown>)
+  return directory && statSync(directory, { throwIfNoEntry: false })?.isDirectory() ? directory : undefined
+}
+
+/**
+ * The scene directory a signal's own path names, `.../3-scenes/<id>/...`.
+ *
+ * A watcher publishes the file it saw and nothing else — no scene and no dispatch — so the layout in the path is the only
+ * thing that says which scene the file belongs to. Deriving it here, on the Trigger as stored, is what makes it work:
+ * `prepare` reads that stored Trigger, not any payload an assessment built while deciding.
+ *
+ * @returns the directory the path names, whether or not it exists; the caller checks that
+ */
+function sceneDirectoryFromPath(payload: Record<string, unknown>): string | undefined {
+  const raw = typeof payload.path === 'string' ? payload.path : ''
+  if (!raw) return undefined
+  // A Windows path arrives with backslashes; the marker stays a forward slash.
+  const probe = raw.split('\\').join('/')
+  const match = /(^|\/)3-scenes\/([A-Za-z0-9_-]+)(\/|$)/.exec(probe)
+  if (!match) return undefined
+  const at = probe.indexOf('/3-scenes/')
+  if (at < 0) return undefined
+  const end = at + '/3-scenes/'.length + match[2]!.length
+  // Slice the original: the substitution above is one character for one, so an index in `probe` is the same index in
+  // `raw`, and the caller gets the directory back with the separators it wrote.
+  const directory = raw.slice(0, end)
+  return isAbsolute(directory) ? directory : undefined
 }
 /**
  * Whether a dispatch marked its ticket urgent in the MSP payload (`urgent: true`, as `派活.mjs --urgent` sends): that ticket's
