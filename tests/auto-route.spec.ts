@@ -256,23 +256,24 @@ describe('场景信箱：一封信该谁读、怎么送', () => {
    * 必须**在 harness 之后**调用：harness 的默认参数是 CONFIG，传 undefined 也会把 CONFIG 写进 stateDir。
    * 写完把 mtime 推后 —— `loadAutoRoute` 按 mtime 缓存，不推会被当成没改。
    */
-  const withAreas = (stateDir: string, withSeat = true) => {
+  const withAreas = (stateDir: string, withSeat = true, workerOnBusy = false) => {
     const areas = withSeat
       ? areasFile(stateDir)
       : (() => { const f = join(stateDir, 'areas.json'); writeFileSync(f, JSON.stringify({ areas: [] })); return f })()
     const file = join(stateDir, 'auto-route.json')
     writeFileSync(file, JSON.stringify({
       enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [notifyRule('mailbox', 'seat')], notifyAreas: areas,
+      workerOnBusy,
     }))
     utimesSync(file, new Date(), new Date(Date.now() + 1000))
   }
   /** 跑一封信，回报「有没有 notify、用的什么 mode、有没有开票」。 */
-  const deliver = async (name: string, busy: boolean, withSeat = true) => {
+  const deliver = async (name: string, busy: boolean, withSeat = true, workerOnBusy = false) => {
     const calls: { sessionId: string; mode: string }[] = []
     const stateDir = mkdtempSync(join(tmpdir(), 'notify-mark-'))
     const s = harness(CONFIG, SettingsSchema.parse({}), 'inferred',
       (sessionId, _requestId, _text, mode) => calls.push({ sessionId, mode }), stateDir, () => busy)
-    withAreas(stateDir, withSeat)
+    withAreas(stateDir, withSeat, workerOnBusy)
     await s.run(letter(stateDir, name))
     return { calls, tickets: s.repo.tickets.list(), stateDir }
   }
@@ -299,8 +300,14 @@ describe('场景信箱：一封信该谁读、怎么送', () => {
     expect(tickets).toEqual([])
   })
 
-  it('★ -urgent- 而常驻正忙 → 开一线 worker，且**不 notify**（两个消费者就是双干）', async () => {
+  it('★ -urgent- 而常驻正忙 → 默认也排队，不开 worker（凉酱 2026-11-09 定的）', async () => {
     const { calls, tickets } = await deliver('0034-urgent-忙.md', true)
+    expect(calls.map(call => call.mode)).toEqual(['queue'])
+    expect(tickets).toEqual([])
+  })
+
+  it('★ 只有部署显式打开 workerOnBusy，忙+急才会开一线 worker 且不 notify（两个消费者就是双干）', async () => {
+    const { calls, tickets } = await deliver('0034b-urgent-忙-开了开关.md', true, true, true)
     expect(calls).toEqual([])
     expect(tickets).toHaveLength(1)
   })

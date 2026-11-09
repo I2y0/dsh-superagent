@@ -151,7 +151,7 @@ describe('反推失败要留话（不许静默）', () => {
     const r = autoRouteAssessment(
       { triggers: [outside] } as never,
       { policy: { rules: [{ id: 'msp-local', enabled: true }] } } as never,
-      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule2], notifyAreas: null },
+      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule2], notifyAreas: null, workerOnBusy: false },
       (m) => missed.push(m),
     )
     expect(r).toBeUndefined()                       // 仍然兜底，不自己开票
@@ -204,7 +204,7 @@ describe('reason 文案分三种', () => {
   const settings = { policy: { rules: [{ id: 'msp-local', enabled: true }, { id: 'copy', enabled: true }] } } as never
   const reasonFor = (candidate: unknown, rule: unknown) =>
     (autoRouteAssessment(candidate as never, settings,
-      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule as never], notifyAreas: null }) as never as
+      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule as never], notifyAreas: null, workerOnBusy: false }) as never as
       { assessment: { rule_assessments: { rule_id: string; reason: string }[] } } | undefined)
       ?.assessment.rule_assessments.find(item => item.rule_id === 'msp-local')?.reason
 

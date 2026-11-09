@@ -106,6 +106,14 @@ export const AutoRouteConfigSchema = z.object({
    * a Session is replaced. Empty means a `notify` rule cannot resolve a Session and falls back to opening a Ticket.
    */
   notifyAreas: z.string().trim().nullable().default(null),
+  /**
+   * Whether an urgent letter that reaches a busy Session is handed to a worker instead.
+   *
+   * Off by default (2026-11-09, the seat's call): a worker starts cold — no scene memory, no lessons, no receipt habit —
+   * and one letter read by two consumers is exactly how the double-work bug started. With this off, `-urgent-` decides
+   * only *delivery* (into the run in progress), never *ownership*: the scene reads its own mail either way.
+   */
+  workerOnBusy: z.boolean().default(false),
 }).strict()
 export type AutoRouteConfig = z.infer<typeof AutoRouteConfigSchema>
 export type AutoRouteRule = z.infer<typeof AutoRouteRuleSchema>
@@ -398,7 +406,7 @@ export const sceneFromForTest = (trigger: Candidate['triggers'][number]): { id: 
 
 /** One Trigger resolved against a single rule, for a test to call directly (see `resolveTrigger`). */
 export const resolveForTest = (trigger: Candidate['triggers'][number], rule: AutoRouteRule): Resolution | undefined =>
-  resolveTrigger(trigger, { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule], notifyAreas: null })
+  resolveTrigger(trigger, { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule], notifyAreas: null, workerOnBusy: false })
 
 /**
  * How a resolution came about, said in a way a Decision's reason reads.
@@ -516,9 +524,10 @@ export function autoRouteAssessment(candidate: Candidate, settings: Settings, co
         `Auto-route ${rule.id}: no Session owns the ${resolution.detail} mailbox, so «${title}» is done by a worker`,
         `Auto-route ${rule.id}: areas.json names no Session for the ${resolution.detail} mailbox, so the letter «${title}» becomes a ticket instead of waiting for a reader that does not exist.`)
     }
-    // Busy and urgent is the only combination that leaves the resident Session out of it. Deliberately with no notify as
-    // well: two consumers reading one letter is exactly how the double-work bug happened (2026-11-09, letters 0025/0026).
-    if (target?.session && target.busy && marks.urgent) {
+    // Busy and urgent is the only combination that leaves the resident Session out of it — and only when the deployment
+    // opts in (`workerOnBusy`, off by default): it is deliberately with no notify as well, since two consumers reading
+    // one letter is exactly how the double-work bug happened (2026-11-09, letters 0025/0026).
+    if (config.workerOnBusy && target?.session && target.busy && marks.urgent) {
       return ticketChoice(
         `Auto-route ${rule.id}: the ${resolution.detail} Session is busy and «${title}» is urgent, so a worker takes it`,
         `Auto-route ${rule.id}: «${title}» carries -urgent- while the ${resolution.detail} Session has a turn running, so a worker does it now instead of queueing behind that turn.`)
