@@ -1,0 +1,13 @@
+{
+  "name": "dsh-nene-inbox-source",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "把配置里每个目录的新文件变成工单信号。实现住在 dsh-superagent 的 src/sources/nene-inbox.ts，这里只是让宿主能按包名加载它。",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "files": [
+    "lib"
+  ]
+}

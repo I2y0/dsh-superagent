@@ -14,7 +14,8 @@
  * is ignored is the auto-route rule's business — a Source cannot prompt a Session, and should not try.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { readdirSync, statSync, watch as watchDirectory } from 'node:fs'
+import { appendFileSync, readdirSync, statSync, watch as watchDirectory } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 
@@ -91,8 +92,23 @@ export const neneInboxKind: SourceKind<NeneInboxConfig> = {
 export const name = 'dsh-superagent-nene-inbox'
 export const inject = ['orchestrator']
 
+/**
+ * Writes one line where a person can find it when the plugin loads.
+ *
+ * This host keeps no persistent log, so a plugin that fails to load leaves nothing behind — which cost two restarts on
+ * 2026-11-09 while `apply()` was fine all along. The marker says whether this ran at all, and it goes away with the
+ * Temporary: it writes always, and it is removed once the plugin is confirmed to load.
+ */
+function mark(step: string, detail = ''): void {
+  const file = process.env.NENE_INBOX_MARK
+    ?? join(homedir(), '.dsh', 'state', 'superagent', 'nene-inbox-apply.log')
+  try { appendFileSync(file, `${new Date().toISOString()}	${step}	${detail}
+`) } catch { /* diagnostics must not fail the plugin */ }
+}
+
 export function apply(ctx: Context): void {
-  ctx.effect(() => ctx.orchestrator.sources.register(neneInboxKind), 'nene-inbox: source kind')
+  mark('apply', `inject=${JSON.stringify(inject)}`)
+  ctx.effect(() => { mark('register'); return ctx.orchestrator.sources.register(neneInboxKind) }, 'nene-inbox: source kind')
   ctx.effect(() => {
     const source = sourceContext(ctx.orchestrator, neneInboxKind)
     const controller = new AbortController()
@@ -143,10 +159,12 @@ interface Settled { name: string; path: string; bytes: number; at: string }
  * ends: routing, tickets and workers all belong to the host.
  */
 export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+  mark('watch-start')
   await ctx.ready
   if (signal.aborted) return
   const config = ctx.config<NeneInboxConfig>(SOURCE)
   if (!config || config.dirs.length === 0) {
+    mark('watch-paused', 'no dirs')
     ctx.report(SOURCE, { state: 'paused', detail: '没有配置目录，什么都不收' })
     return
   }
@@ -224,7 +242,8 @@ export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<vo
     closers.push(() => clearInterval(interval))
   }
 
-  ctx.report(SOURCE, { state: 'ready', detail: `监听 ${config.dirs.length} 个目录（尚未接入 Engine）` })
+  mark('watch-ready', `dirs=${config.dirs.map(d => d.role).join(',')}`)
+  ctx.report(SOURCE, { state: 'ready', detail: `监听 ${config.dirs.length} 个目录` })
 
   await new Promise<void>(resolve => {
     if (signal.aborted) { resolve(); return }

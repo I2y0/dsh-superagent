@@ -1,5 +1,5 @@
 import { Q as Trigger } from "./intake-BVQR9ONJ.js";
-import { n as SourceKind } from "./kind-BWwRhRaX.js";
+import { n as SourceKind, r as SourceContext } from "./kind-BWwRhRaX.js";
 import { Context } from "@deepseek-ai/cordis";
 import { z } from "zod";
 //#region src/sources/nene-inbox.d.ts
@@ -50,5 +50,12 @@ declare function apply(ctx: Context): void;
 declare function buildTrigger(watched: Watched, name: string, absolutePath: string, bytes: number, at: string): Trigger;
 /** Whether `name` is a file this entry wants: plain files only, matching one of `extensions` when any are given. */
 declare function wanted(watched: Watched, name: string): boolean;
+/**
+ * Watches the configured directories and reports each file it settles on.
+ *
+ * Every accepted file becomes a Trigger and is ingested with `receive()`, which is where this Source's responsibility
+ * ends: routing, tickets and workers all belong to the host.
+ */
+declare function watch(ctx: SourceContext, signal: AbortSignal): Promise<void>;
 //#endregion
-export { NeneInboxConfig, NeneInboxConfigSchema, SOURCE, Watched, apply, buildTrigger, inject, name, neneInboxKind, signalPathOf, threadOf, wanted };
+export { NeneInboxConfig, NeneInboxConfigSchema, SOURCE, Watched, apply, buildTrigger, inject, name, neneInboxKind, signalPathOf, threadOf, wanted, watch };
