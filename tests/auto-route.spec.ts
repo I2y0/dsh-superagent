@@ -2,7 +2,7 @@
 import { mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { MasterAssessor, type AssessorHost } from '../src/app/assessment.ts'
 import { AutoRouteConfigSchema, autoRouteAssessment, loadAutoRoute, matchedPhrase } from '../src/app/auto-route.ts'
 import { Engine, MemoryRepositories, type Executor, type Policy, type Trigger } from '../src/core/index.ts'
@@ -50,8 +50,12 @@ function qq(text: string, extra: Record<string, unknown> = {}, overrides: Partia
   }
 }
 
-function harness(config: unknown = CONFIG, settings = SettingsSchema.parse({}), admission: 'explicit' | 'inferred' = 'explicit') {
-  const stateDir = mkdtempSync(join(tmpdir(), 'auto-route-'))
+function harness(config: unknown = CONFIG, settings = SettingsSchema.parse({}), admission: 'explicit' | 'inferred' = 'explicit',
+  /** Records every notify delivery the route handler makes, so the mode it chose can be asserted. */
+  onNotify: (sessionId: string, requestId: string, text: string, mode: 'queue' | 'steer') => void = () => {},
+  /** 换一个 stateDir（测试 `notify` 时要先把 areas.json 和规则一起写进去）。 */
+  stateDirOverride?: string) {
+  const stateDir = stateDirOverride ?? mkdtempSync(join(tmpdir(), 'auto-route-'))
   if (config !== undefined) writeFileSync(join(stateDir, 'auto-route.json'), JSON.stringify(config))
   const repo = new MemoryRepositories()
   const queued: { kind: string; key: string; payload: { triggerId: string } }[] = []
@@ -70,7 +74,7 @@ function harness(config: unknown = CONFIG, settings = SettingsSchema.parse({}), 
     deployment: testDeployment({ stateDir }),
     settings: () => settings,
     warn: (message: string) => { warned.push(message) },
-    notifySession: async () => {},
+    notifySession: async (sessionId, requestId, text, mode) => { onNotify(sessionId, requestId, text, mode) },
     threadContext: () => undefined,
     effects,
     paused: () => false,
@@ -219,4 +223,59 @@ it('reads an edit of the rules file on the next evaluation, and treats a malform
   writeFileSync(file, '{ not json')
   utimesSync(file, new Date(), new Date(Date.now() + 2000))
   expect(loadAutoRoute(dir)).toBeUndefined()
+})
+
+// ★ 一封信交给常驻会话时，送法由文件名决定，不由谁写规则决定：
+//   标了「马上回」的信要进正在跑的那一轮（steer），普通的等下一轮（queue）。
+//   这一条以前写在方案里、代码里没有 —— 急信和普通信走的是同一个 'queue'。
+describe('交给会话的信：急信插队，普通信排队', () => {
+  const notifyRule = (id: string, role: string) => ({
+    id, source: 'nene-inbox', prefixes: [], phrases: [], paths: [`file.created.${role}`], sceneFromPath: false,
+    notify: true, senders: [], chatTypes: [], rule: 'msp-local', worktree: 'task',
+    payloadScope: true, otherwise: 'card', actor: '', human: false,
+  })
+  const config = (role: string) => AutoRouteConfigSchema.parse({
+    enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [notifyRule('mailbox', role)],
+  })
+  const areasFile = (stateDir: string) => {
+    const areas = join(stateDir, 'areas.json')
+    writeFileSync(areas, JSON.stringify({ areas: [{ scene: 'nene', sceneId: 'nene', session: 'session-seat', role: 'nene' }] }))
+    return areas
+  }
+  /** 一封投到座位信箱的信，文件名决定它急不急。 */
+  const letter = (stateDir: string, name: string): Trigger => ({
+    id: `nene-inbox:seat:${name}`, source: 'nene-inbox', human: false, at: '2026-11-09T10:00:00.000Z', text: '',
+    threads: [{ source: 'nene-inbox', id: `inbox.seat.${name}` }], actor: { source: 'nene-inbox', id: '' },
+    meta: { mspPath: 'file.created.seat', mspPayload: { name, path: join(stateDir, 'seat-inbox', name), bytes: 12 } },
+  })
+  const withAreas = (stateDir: string) => {
+    // 必须**在 harness 之后**调用：harness 的默认参数是 CONFIG，传 undefined 也会把 CONFIG 写进 stateDir。
+    // 写完顺手把 mtime 推后 —— loadAutoRoute 按 mtime 缓存，不推会被当成没改。
+    const areas = areasFile(stateDir)
+    const file = join(stateDir, 'auto-route.json')
+    writeFileSync(file, JSON.stringify({
+      enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [notifyRule('mailbox', 'seat')], notifyAreas: areas,
+    }))
+    utimesSync(file, new Date(), new Date(Date.now() + 1000))
+  }
+
+  it('★ 文件名带 -马上回- → steer（插进正在跑的那一轮）', async () => {
+    const calls: [string, string, string, string][] = []
+    const stateDir = mkdtempSync(join(tmpdir(), 'notify-urgent-'))
+    const s = harness(CONFIG, SettingsSchema.parse({}), 'inferred',
+      (id, requestId, text, mode) => calls.push([id, requestId, text, mode]), stateDir)
+    withAreas(stateDir)
+    await s.run(letter(stateDir, '0027-马上回-对一遍.md'))
+    expect(calls.map(call => call[3])).toEqual(['steer'])
+  })
+
+  it('★ 普通信 → queue（等下一轮，不打断）', async () => {
+    const calls: [string, string, string, string][] = []
+    const stateDir = mkdtempSync(join(tmpdir(), 'notify-queue-'))
+    const s = harness(CONFIG, SettingsSchema.parse({}), 'inferred',
+      (id, requestId, text, mode) => calls.push([id, requestId, text, mode]), stateDir)
+    withAreas(stateDir)
+    await s.run(letter(stateDir, '0028-普通信.md'))
+    expect(calls.map(call => call[3])).toEqual(['queue'])
+  })
 })

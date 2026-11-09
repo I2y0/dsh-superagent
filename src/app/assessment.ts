@@ -119,9 +119,12 @@ export class MasterAssessor implements Assessor {
         message => this.host.warn(message))
       if (choice?.decision === 'notify' && choice.notify) {
         const sessionId = sceneSession(loadAutoRoute(this.host.deployment.stateDir)?.notifyAreas ?? null, choice.notify.scene)
+        // A letter marked urgent in its own name goes into the running turn; everything else waits for the next one.
+        // Both are the Session reading the letter itself — neither stops it, and neither opens a ticket.
+        const mode = choice.notify.urgent ? 'steer' as const : 'queue' as const
         if (sessionId) {
           try {
-            await this.host.notifySession(sessionId, `notify:${triggerId}`, letterNotice(choice.notify), 'queue')
+            await this.host.notifySession(sessionId, `notify:${triggerId}`, letterNotice(choice.notify), mode)
             this.host.engine.decide(triggerId, { kind: 'ignore', reason: { code: 'notified', values: { scene: choice.notify.scene } }, evalId })
             return
           } catch (error) {

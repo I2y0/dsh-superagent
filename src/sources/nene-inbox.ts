@@ -153,6 +153,11 @@ export const name = 'dsh-superagent-nene-inbox'
 export const inject = ['orchestrator']
 
 export function apply(ctx: Context): void {
+  // Register the kind itself. Without this the plugin loads, watches nothing and reports nothing: the panel lists the
+  // Source as `missing` and every file in the mailboxes is dropped in silence. 2026-11-09 it was lost for two hours
+  // because the temporary load marker wrapped this very call (`mark('register'); return …register(…)`) and removing the
+  // marker removed the registration with it. Pinned by `tests/nene-inbox-apply.spec.ts`.
+  ctx.effect(() => ctx.orchestrator.sources.register(neneInboxKind), 'nene-inbox: source kind')
   ctx.effect(() => {
     const source = sourceContext(ctx.orchestrator, neneInboxKind)
     const controller = new AbortController()

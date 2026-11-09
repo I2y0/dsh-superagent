@@ -176,6 +176,14 @@ export function sceneSession(areasFile: string | null, scene: string): string | 
 }
 
 /**
+ * A letter whose file name marks it urgent, in the same shape nene's own mailbox rule uses (`SEAT_URGENT_RE`).
+ *
+ * The name is the only thing a watcher can read before the letter is opened, and the person sending it is the one who
+ * decides it is urgent — the marker has to be written by them, not guessed from the text.
+ */
+export const URGENT_LETTER_RE = /-马上回-/
+
+/**
  * What a scene's Session is told when a letter reaches its mailbox.
  *
  * It names the file and nothing else: the letter is the message, and a summary would be a second copy of it that can
@@ -406,8 +414,13 @@ export interface AutoRouteChoice {
   decision: 'accept' | 'silent' | 'notify'
   /** The assessment the main Session would have written for this candidate. */
   assessment: Assessment
-  /** For `notify`: the scene whose Session is told, and the file it is told to read. */
-  notify?: { scene: string; title: string; path: string }
+  /**
+   * For `notify`: the scene whose Session is told, and the file it is told to read.
+   *
+   * `urgent` comes from the file name (`-马上回-`), and it decides the delivery mode rather than whether to deliver: an
+   * urgent letter goes into the Session's running turn, an ordinary one waits for its next.
+   */
+  notify?: { scene: string; title: string; path: string; urgent: boolean }
 }
 
 /**
@@ -438,9 +451,10 @@ export function autoRouteAssessment(candidate: Candidate, settings: Settings, co
   if (resolution.decision === 'notify') {
     // The file itself is the message: the Session reads it, not a summary of it.
     const file = typeof payload.path === 'string' ? payload.path : ''
+    const urgent = URGENT_LETTER_RE.test(title) || URGENT_LETTER_RE.test(file)
     return {
       decision: 'notify',
-      notify: { scene: resolution.detail, title, path: file },
+      notify: { scene: resolution.detail, title, path: file, urgent },
       assessment: {
         decision: 'ignore',
         rule_assessments: ruleAssessments,
