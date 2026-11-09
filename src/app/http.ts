@@ -197,7 +197,9 @@ function routes(runtime: HttpHost): Routes {
     // one fact disagree. Sending no `project` clears the pointer.
     'POST tickets/:id/project': async ({ params, body }) => {
       const id = ticket(params.id)
-      const { project } = z.object({ project: z.string().trim().max(120).optional() }).parse(await body())
+      // `null` is how a caller says "no project" — a schema that only took a string refused it (2026-11-09), so clearing a
+      // pointer looked like a broken call instead of the empty answer the caller meant.
+      const { project } = z.object({ project: z.string().trim().max(120).nullable().optional() }).parse(await body())
       runtime.engine.setProject(id, project || undefined)
       return { project: project || null }
     },

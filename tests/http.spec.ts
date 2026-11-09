@@ -110,7 +110,9 @@ it('points a ticket at a project by id, and clears the pointer when asked for no
   })
   expect((await call('POST', 'tickets/t1/project', { project: 'p-abc' })).body).toEqual({ project: 'p-abc' })
   expect((await call('POST', 'tickets/t1/project', {})).body).toEqual({ project: null })
-  expect(calls).toEqual(['p-abc', undefined])
+  // `null` 也算清空：调用方这么写最自然，之前会被 schema 当坏输入拒掉（2026-11-09 现场验出来的）。
+  expect((await call('POST', 'tickets/t1/project', { project: null })).body).toEqual({ project: null })
+  expect(calls).toEqual(['p-abc', undefined, undefined])
   // 不存在的票当场 404，不许静默写进空指针
   const missing = await call('POST', 'tickets/nope/project', { project: 'p-abc' })
   expect(missing.status).toBe(404)
