@@ -33,6 +33,13 @@ import type { Assessment, Settings } from '../policy.ts'
 const AutoRouteRuleSchema = z.object({
   /** Lowercase id, used in the Decision reason and the audit. */
   id: z.string().regex(/^[a-z0-9][a-z0-9-]{1,63}$/),
+  /**
+   * The Source kind this rule speaks for; omitted uses the file's `source`.
+   *
+   * Two Sources coexist while a mailbox moves from one to the other — msp for dispatch and QQ, nene-inbox for the
+   * mailboxes — and one file-level `source` can only name one of them.
+   */
+  source: z.string().trim().min(1).optional(),
   /** Title prefixes that mark this kind of work, compared after trimming the title. */
   prefixes: z.array(z.string().trim().min(1)).default([]),
   /** Phrases in `payload.text` that hand work over (“让影子去”, “派个 worker”), compared case-insensitively. */
@@ -51,6 +58,15 @@ const AutoRouteRuleSchema = z.object({
    * keeps the dispatcher from having to repeat the layout in every payload.
    */
   sceneFromPath: z.boolean().default(false),
+  /**
+   * Tell the scene's resident Session instead of opening a Ticket.
+   *
+   * A mailbox is not always work for a worker: a letter for a scene is read, decided and answered by that scene's own
+   * Session, which keeps its memory, its lessons and its receipts. A watcher cannot tell a Session anything — only the
+   * route handler can, through `notifySession` — so the decision lives here, as a third outcome beside accept and ignore.
+   * Requires `sceneFromPath`, because the Session to tell is the one the path names.
+   */
+  notify: z.boolean().default(false),
   /** `payload.sender` values (QQ/Feishu ids) this rule speaks for; empty speaks for any sender. */
   senders: z.array(z.string().trim().min(1)).default([]),
   /** `payload.chatType` values (such as `private`) this rule speaks for; empty speaks for any chat. */
@@ -85,6 +101,11 @@ export const AutoRouteConfigSchema = z.object({
   /** Only a Trigger the Source declared human may auto-route, so machine noise cannot open tickets by title alone. */
   humanOnly: z.boolean().default(true),
   rules: z.array(AutoRouteRuleSchema).default([]),
+  /**
+   * Path to nene's `areas.json`, which maps a scene to the Session that owns it — the only file that stays current when
+   * a Session is replaced. Empty means a `notify` rule cannot resolve a Session and falls back to opening a Ticket.
+   */
+  notifyAreas: z.string().trim().nullable().default(null),
 }).strict()
 export type AutoRouteConfig = z.infer<typeof AutoRouteConfigSchema>
 export type AutoRouteRule = z.infer<typeof AutoRouteRuleSchema>
@@ -129,6 +150,52 @@ export function loadAutoRoute(stateDir: string, report?: (message: string) => vo
   }
 }
 
+/**
+ * The Session that owns a scene, as nene's `areas.json` records it.
+ *
+ * That file is the only one that stays current when a Session is replaced or the seat hands over, so the mapping is read
+ * from it rather than copied into the rules: a copied id goes stale silently, and a stale id means a letter nobody reads.
+ * @returns the Session id, or `undefined` when the file is unset, unreadable, or names no such scene
+ */
+export function sceneSession(areasFile: string | null, scene: string): string | undefined {
+  if (!areasFile) return undefined
+  let parsed: unknown
+  try { parsed = JSON.parse(readFileSync(areasFile, 'utf8')) } catch { return undefined }
+  const areas = (parsed as { areas?: unknown })?.areas
+  if (!Array.isArray(areas)) return undefined
+  const row = areas.find((entry: unknown) => {
+    const area = entry as { role?: unknown; sceneId?: unknown; scene?: unknown; session?: unknown } | null
+    return !!area && area.role === 'shadow' && String(area.sceneId ?? area.scene ?? '') === scene && typeof area.session === 'string' && area.session
+  }) as { session?: string } | undefined
+  return row?.session
+}
+
+/**
+ * What a scene's Session is told when a letter reaches its mailbox.
+ *
+ * It names the file and nothing else: the letter is the message, and a summary would be a second copy of it that can
+ * disagree. The instruction stays with the scene — it knows its own mailbox rules.
+ */
+export function letterNotice(notify: { scene: string; title: string; path: string }): string {
+  return [
+    `【信箱 ${notify.scene}】新到 1 封：${notify.title}`,
+    notify.path ? `路径：${notify.path}` : '',
+    '按这个场景自己的信箱规范处理：领走、干活、写回执。',
+  ].filter(Boolean).join(String.fromCharCode(10))
+}
+
+/**
+ * The mailbox role a signal path names, from `file.created.<role>`.
+ *
+ * A `notify` rule needs to know which Session to tell, and for a mailbox outside `3-scenes/` the file path says nothing
+ * about it — the role the watcher put in the signal path is the only thing that does.
+ * @returns the role, or `undefined` when the path carries none
+ */
+export function roleOfSignalPath(path: string): string | undefined {
+  const match = /^file\.created\.([a-z][a-z0-9-]*)$/.exec(String(path ?? ''))
+  return match?.[1]
+}
+
 /** The payload a Source attached to a machine message: MSP Signals carry theirs under `mspPayload`. */
 function payloadOf(trigger: Candidate['triggers'][number]): Record<string, unknown> | undefined {
   const payload = trigger.meta?.mspPayload
@@ -150,7 +217,7 @@ function taskSegment(payload: Record<string, unknown>, triggerId: string): strin
 
 /** Whether a rule speaks for this Trigger: right source, actor, human flag, and the payload's sender and chat type. */
 function speaksFor(trigger: Candidate['triggers'][number], rule: AutoRouteRule, config: AutoRouteConfig): Record<string, unknown> | undefined {
-  if (trigger.source !== config.source) return undefined
+  if (trigger.source !== (rule.source ?? config.source)) return undefined
   if (trigger.actor.id !== (rule.actor ?? config.sender)) return undefined
   if ((rule.human ?? config.humanOnly) && trigger.human !== true) return undefined
   const payload = payloadOf(trigger)
@@ -238,7 +305,7 @@ export function matchedPhrase(text: string, phrases: readonly string[]): string 
 }
 
 /** One Trigger's resolution: the rule that settles it, and whether that opens a ticket or only closes the message. */
-interface Resolution { rule: AutoRouteRule; decision: 'accept' | 'silent'; how: 'prefix' | 'phrase' | 'scene'; detail: string; title: string; payload: Record<string, unknown> }
+interface Resolution { rule: AutoRouteRule; decision: 'accept' | 'silent' | 'notify'; how: 'prefix' | 'phrase' | 'scene'; detail: string; title: string; payload: Record<string, unknown> }
 
 /** The rule that settles one Trigger, or `undefined` when it is the seat's to decide. */
 function resolveTrigger(trigger: Candidate['triggers'][number], config: AutoRouteConfig,
@@ -253,13 +320,26 @@ function resolveTrigger(trigger: Candidate['triggers'][number], config: AutoRout
     // A watcher's payload names a file, not a dispatch: fall back to it so a path-derived rule still has something to
     // name the ticket with.
     const named = typeof payload.name === 'string' ? payload.name.trim() : ''
-    const title = (typeof payload.title === 'string' ? payload.title.trim() : '') || (rule.sceneFromPath ? named : '')
+    // A watcher's payload names a file, not a dispatch; both rules that read the path and rules that only tell a
+    // Session need that name as their title.
+    const title = (typeof payload.title === 'string' ? payload.title.trim() : '') || (rule.sceneFromPath || rule.notify ? named : '')
     if (!title) return undefined
+    // A mailbox that belongs to a Session names it in the role: `file.created.<role>`. The file path cannot say it — a
+    // seat mailbox lives outside `3-scenes/` — so this is checked before, and independently of, the path layout.
+    if (rule.notify) {
+      const scene = sceneFrom(trigger)?.id ?? roleOfSignalPath(signalPath(trigger))
+      if (scene) return { rule, decision: 'notify', how: 'scene', detail: scene, title, payload }
+      onMiss?.(`auto-route ${rule.id}: 这条规则要送信给会话，但推不出场景`
+        + `（mspPath=${signalPath(trigger) || '无'}，payload.path=${typeof payload.path === 'string' ? payload.path : '无'}）`)
+    }
     // A scene from the path is the hardest evidence there is: the layout itself says which scene the file belongs to, so
     // it wins over a prefix or a phrase someone wrote by hand.
     if (rule.sceneFromPath) {
       const scene = sceneFrom(trigger)
-      if (scene) return { rule, decision: 'accept', how: 'scene', detail: scene.id, title, payload: { ...payload, scene } }
+      if (scene) {
+        const decision = rule.notify ? 'notify' as const : 'accept' as const
+        return { rule, decision, how: 'scene', detail: scene.id, title, payload: { ...payload, scene } }
+      }
       // ★ 2026-11-09（0021 二）：反推失败**必须留下痕迹**，不许静默当没收到。
       //   照原样继续走 prefix/phrase 兜底，但要说一句，否则「信来了没开票」永远查不出来。
       onMiss?.(`auto-route ${rule.id}: 信号路径推不出场景（mspPath=${signalPath(trigger) || '无'}，`
@@ -281,7 +361,7 @@ export const sceneFromForTest = (trigger: Candidate['triggers'][number]): { id: 
 
 /** One Trigger resolved against a single rule, for a test to call directly (see `resolveTrigger`). */
 export const resolveForTest = (trigger: Candidate['triggers'][number], rule: AutoRouteRule): Resolution | undefined =>
-  resolveTrigger(trigger, { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule] })
+  resolveTrigger(trigger, { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule], notifyAreas: null })
 
 /**
  * How a resolution came about, said in a way a Decision's reason reads.
@@ -314,10 +394,15 @@ function resolveCandidate(candidate: Candidate, config: AutoRouteConfig,
 
 /** What `autoRouteAssessment` decided for a candidate: the assessment to submit, and whether it opens a ticket. */
 export interface AutoRouteChoice {
-  /** `accept` opens a ticket; `silent` records an ignore so the seat is not woken for a message that answers itself. */
-  decision: 'accept' | 'silent'
+  /**
+   * `accept` opens a ticket; `silent` records an ignore so the seat is not woken for a message that answers itself;
+   * `notify` tells a scene's resident Session and opens nothing.
+   */
+  decision: 'accept' | 'silent' | 'notify'
   /** The assessment the main Session would have written for this candidate. */
   assessment: Assessment
+  /** For `notify`: the scene whose Session is told, and the file it is told to read. */
+  notify?: { scene: string; title: string; path: string }
 }
 
 /**
@@ -338,11 +423,34 @@ export function autoRouteAssessment(candidate: Candidate, settings: Settings, co
     rule_id: item.id,
     matched: item.id === rule.rule,
     reason: item.id === rule.rule
-      ? resolution.decision === 'accept'
-        ? `Auto-route ${rule.id}: «${title}» ${howSaid(resolution.how)} ${resolution.detail}`
-        : `Auto-route ${rule.id}: «${title}» hands no work to a worker, so the chat path answers it`
+      ? resolution.decision === 'notify'
+        ? `Auto-route ${rule.id}: «${title}» is handed to the ${resolution.detail} Session`
+        : resolution.decision === 'accept'
+          ? `Auto-route ${rule.id}: «${title}» ${howSaid(resolution.how)} ${resolution.detail}`
+          : `Auto-route ${rule.id}: «${title}» hands no work to a worker, so the chat path answers it`
       : `Auto-route ${rule.id} settled by rule ${rule.rule} instead`,
   }))
+  if (resolution.decision === 'notify') {
+    // The file itself is the message: the Session reads it, not a summary of it.
+    const file = typeof payload.path === 'string' ? payload.path : ''
+    return {
+      decision: 'notify',
+      notify: { scene: resolution.detail, title, path: file },
+      assessment: {
+        decision: 'ignore',
+        rule_assessments: ruleAssessments,
+        direction: {
+          implementation_requested: false,
+          target_basis: 'undetermined',
+          requires_design_decision: false,
+          evidence: `Auto-route ${rule.id}: the ${resolution.detail} Session is told about «${title}» instead of a worker being opened`,
+        },
+        title: title.slice(0, 160),
+        scope: `No ticket: ${title}`.slice(0, 1500),
+        reason: `Auto-route ${rule.id}: handed to the ${resolution.detail} Session, no ticket`,
+      },
+    }
+  }
   if (resolution.decision === 'silent') {
     const scope = `No ticket: ${title}`
     return {

@@ -19,7 +19,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }))
 const rule = {
   id: 'nene-inbox', actor: '', human: false, paths: ['file.**'], sceneFromPath: true,
   prefixes: [], phrases: [], senders: [], chatTypes: [],
-  rule: 'msp-local', worktree: 'scene', payloadScope: true, otherwise: 'card' as const,
+  rule: 'msp-local', worktree: 'scene', payloadScope: true, otherwise: 'card' as const, notify: false,
 }
 
 /** 一条 `file.created` 机器信号：actor 空、human false、payload 只有 name/path/bytes。 */
@@ -151,7 +151,7 @@ describe('反推失败要留话（不许静默）', () => {
     const r = autoRouteAssessment(
       { triggers: [outside] } as never,
       { policy: { rules: [{ id: 'msp-local', enabled: true }] } } as never,
-      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule2] },
+      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule2], notifyAreas: null },
       (m) => missed.push(m),
     )
     expect(r).toBeUndefined()                       // 仍然兜底，不自己开票
@@ -204,19 +204,19 @@ describe('reason 文案分三种', () => {
   const settings = { policy: { rules: [{ id: 'msp-local', enabled: true }, { id: 'copy', enabled: true }] } } as never
   const reasonFor = (candidate: unknown, rule: unknown) =>
     (autoRouteAssessment(candidate as never, settings,
-      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule as never] }) as never as
+      { enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [rule as never], notifyAreas: null }) as never as
       { assessment: { rule_assessments: { rule_id: string; reason: string }[] } } | undefined)
       ?.assessment.rule_assessments.find(item => item.rule_id === 'msp-local')?.reason
 
   it('★ 场景命中 → 说「names the scene」，绝不说 dispatch phrase', () => {
-    const rule = { id: 'nene-inbox', paths: ['file.**'], sceneFromPath: true, actor: '', human: false, rule: 'msp-local', prefixes: [], phrases: [], senders: [], chatTypes: [], worktree: 'scene', payloadScope: true, otherwise: 'card' }
+    const rule = { id: 'nene-inbox', paths: ['file.**'], sceneFromPath: true, actor: '', human: false, rule: 'msp-local', prefixes: [], phrases: [], senders: [], chatTypes: [], worktree: 'scene', payloadScope: true, otherwise: 'card', notify: false }
     const reason = reasonFor({ triggers: [signal(join(qqDir, 'inbox', 'a.md'))] }, rule)
     expect(reason).toContain('names the scene')
     expect(reason).not.toContain('dispatch phrase')
   })
 
   it('★ 标题前缀命中 → 说「carries the title prefix」', () => {
-    const rule = { id: 'qq', prefixes: ['[QQ]'], phrases: [], paths: [], senders: [], chatTypes: [], rule: 'msp-local', worktree: 'qq', payloadScope: true, otherwise: 'card' }
+    const rule = { id: 'qq', prefixes: ['[QQ]'], phrases: [], paths: [], senders: [], chatTypes: [], rule: 'msp-local', worktree: 'qq', payloadScope: true, otherwise: 'card', notify: false }
     const t = { ...signal(join(qqDir, 'inbox', 'a.md')), human: true, actor: { source: 'msp', id: 'seat' }, meta: { mspPath: 'human.message', mspPayload: { title: '[QQ] 帮我看看', text: '[QQ] 帮我看看' } } }
     expect(reasonFor({ triggers: [t] }, rule)).toContain('carries the title prefix')
   })

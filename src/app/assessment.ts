@@ -14,7 +14,7 @@ import { relatedTickets } from './cards.ts'
 import { textPage } from './context.ts'
 import { AcknowledgementSchema } from './tools/tool.ts'
 import type { Effects } from './effects.ts'
-import { autoRouteAssessment, loadAutoRoute } from './auto-route.ts'
+import { autoRouteAssessment, letterNotice, loadAutoRoute, sceneSession } from './auto-route.ts'
 
 /** Schema for a short lowercase kebab-case English ticket worktree name (1–4 words, at most 32 characters). */
 export const WorktreeNameSchema = z.string().max(32).regex(/^[a-z]+(?:-[a-z0-9]+){0,3}$/, 'Use 1–4 short English words in lowercase kebab-case, at most 32 characters').describe('Meaningful short English ticket name, e.g. fix-plan-color. Translate Chinese titles into English; no Chinese, pinyin or generic ticket names. 1–4 lowercase words in kebab-case, at most 32 characters.')
@@ -57,6 +57,14 @@ export interface AssessorHost {
   settings(): Settings
   /** Reports something an operator needs to see but that must not fail an Eval, such as a scene it could not derive. */
   warn(message: string): void
+  /**
+   * Delivers a message to one Session, by id, once per request id.
+   *
+   * A Source cannot do this — its context only ingests Triggers and sends out through its own channel — so a mailbox
+   * that belongs to a resident Session reaches it through here, when a routing rule decides `notify`.
+   * @param mode `queue` waits for the Session's next turn, `steer` goes into the running one
+   */
+  notifySession(sessionId: string, requestId: string, text: string, mode: 'queue' | 'steer'): Promise<void>
   /** Whether processing is paused, which holds candidate deliveries. */
   paused(): boolean
   /** Thread context reader for `trigger`'s Source, or `undefined` when the Source has none. */
@@ -109,6 +117,21 @@ export class MasterAssessor implements Assessor {
       const settings = this.host.settings()
       const choice = autoRouteAssessment(candidate, settings, loadAutoRoute(this.host.deployment.stateDir, message => this.host.warn(message)),
         message => this.host.warn(message))
+      if (choice?.decision === 'notify' && choice.notify) {
+        const sessionId = sceneSession(loadAutoRoute(this.host.deployment.stateDir)?.notifyAreas ?? null, choice.notify.scene)
+        if (sessionId) {
+          try {
+            await this.host.notifySession(sessionId, `notify:${triggerId}`, letterNotice(choice.notify), 'queue')
+            this.host.engine.decide(triggerId, { kind: 'ignore', reason: { code: 'notified', values: { scene: choice.notify.scene } }, evalId })
+            return
+          } catch (error) {
+            // A Session that cannot be reached must not swallow the letter: fall through and open a ticket instead.
+            this.host.warn(`auto-route: 送不到 ${choice.notify.scene} 的会话（${error instanceof Error ? error.message : String(error)}），改为开票`)
+          }
+        } else {
+          this.host.warn(`auto-route: 找不到 ${choice.notify.scene} 的会话（notifyAreas 未配置或不含这个场景），改为开票`)
+        }
+      }
       let outcome
       try { outcome = choice && assessmentOutcome(choice.assessment, settings, candidate.strength) } catch { outcome = undefined }
       // Anything the deterministic path cannot settle falls back to the seat's own assessment rather than deciding on its behalf.
