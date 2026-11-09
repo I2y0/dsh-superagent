@@ -96,6 +96,29 @@ export const neneInboxKind: SourceKind<NeneInboxConfig> = {
   ],
   health: [SOURCE],
   /**
+   * The Policy's part on this Source.
+   *
+   * Declared rather than omitted because the panel lists a Source under "On each Source" only when it has one
+   * (`client/eval.tsx`: `sources.filter(source => source.policy)`), so without it an operator cannot set this Source's
+   * admission row at all — and an unset row falls back to `ignore`, which admits a file and then opens nothing.
+   *
+   * The `ambient` row has one applicable cell: a file has no sender and there is no membership list, so neither
+   * "on the list" nor "addressed" can apply.
+   */
+  policy: {
+    schema: z.object({ allowed: z.array(z.object({ id: z.string().trim().min(1) }).strict()).default([]) }).strict(),
+    fields: [{ key: 'allowed', type: 'rows', label: { zh: '能通过这个来源发起工作的账号', en: 'Accounts that may originate work through this Source' },
+      hint: { zh: '目录里的文件没有发送者，所以这个名单不会挡住它们；它只对带发送者的信号有意义。', en: 'A file has no sender, so this list never blocks one; it only matters for signals that carry a sender.' },
+      columns: [{ key: 'id', type: 'text', label: { zh: '账号', en: 'Account' } }] }],
+    explicit: { zh: '名单里的账号发的、点名智能体本人的信号。文件事件做不到这一点。', en: 'A signal from an account on the list that addresses the agent itself; a file event never can.' },
+    rows: () => [{
+      id: 'ambient' as const,
+      label: { zh: '目录里的新文件', en: 'A new file in a directory' },
+      note: { zh: '没有发送者', en: 'No sender' },
+      cells: { listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: true },
+    }],
+  },
+  /**
    * Every file this kind reports is in scope and observed: there is no membership list to filter by, exactly as the msp
    * Source argues for its own signals. `row` names the admission row the Policy looks up, so
    * `policy.sources.nene-inbox.admission.ambient.unlistedUnaddressed` must be `inferred`; otherwise a file arrives and

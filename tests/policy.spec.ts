@@ -501,3 +501,38 @@ describe('fresh installation', () => {
       .toMatchObject({ admissible: true, strength: 'inferred' })
   })
 })
+
+// ★ 一个来源自己声明的默认准入，要在运营没设过那一格时生效。
+//   只加到 DEFAULT_SOURCES 是没用的 —— 那是整份 sources 记录的默认值，
+//   而任何已配置的部署 Settings 里都有 sources，默认值根本不会被生成。
+describe('来源自己声明的准入默认值', () => {
+  const machine = (source: string) => ({
+    id: `${source}:1`, source, human: false, at: '2026-11-09T13:00:00.000Z', text: '',
+    threads: [{ source, id: 'ambient' }], actor: { source, id: '' }, meta: { mspPath: 'file.created.workshop' },
+  }) as never
+
+  it('★ nene-inbox 没设过 → 按自己声明的 inferred 进来', () => {
+    const settings = SettingsSchema.parse({ sources: { 'nene-inbox': { enabled: true, config: {} } } })
+    const gate = settingsPolicy(settings, { scope: () => ({ listened: true, observed: true, row: 'ambient' }) } as never)
+      .gate(machine('nene-inbox'), undefined as never, [])
+    expect(gate).toMatchObject({ admissible: true, strength: 'inferred' })
+  })
+
+  it('★ 别的来源没设过 → 仍然走全局默认 ignore（不许连累别人）', () => {
+    const settings = SettingsSchema.parse({ sources: { other: { enabled: true, config: {} } } })
+    const gate = settingsPolicy(settings, { scope: () => ({ listened: true, observed: true, row: 'ambient' }) } as never)
+      .gate(machine('other'), undefined as never, [])
+    expect(gate).toMatchObject({ admissible: false, reason: 'admission_ignored' })
+  })
+
+  it('★ 运营明确选了 ignore → 盖过来源默认', () => {
+    // 准入住在 policy.sources，不在实例配置里（实例配置是 {enabled, config}）
+    const settings = SettingsSchema.parse({
+      sources: { 'nene-inbox': { enabled: true, config: {} } },
+      policy: { sources: { 'nene-inbox': { admission: { ambient: { unlistedUnaddressed: 'ignore' } } } } },
+    })
+    const gate = settingsPolicy(settings, { scope: () => ({ listened: true, observed: true, row: 'ambient' }) } as never)
+      .gate(machine('nene-inbox'), undefined as never, [])
+    expect(gate).toMatchObject({ admissible: false, reason: 'admission_ignored' })
+  })
+})

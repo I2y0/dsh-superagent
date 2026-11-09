@@ -131,3 +131,18 @@ describe('extensions 两种写法都收', () => {
     expect(parse(undefined)).toEqual([])
   })
 })
+
+// ★ 准入：这个 kind 必须自己声明 policy 部分，否则面板「在各来源上」根本列不出它
+//   （client/eval.tsx: sources.filter(source => source.policy)），运营就没法设准入。
+describe('准入的表行', () => {
+  it('★ 只有「名单外 · 未 @」这一格适用 —— 文件没有发送者，也没有名单', () => {
+    const rows = neneInboxKind.policy!.rows!({})
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.id).toBe('ambient')
+    expect(rows[0]!.cells).toEqual({ listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: true })
+  })
+
+  it('policy 的 schema 收得下空对象（allowed 默认空）', () => {
+    expect(neneInboxKind.policy!.schema.parse({})).toEqual({ allowed: [] })
+  })
+})

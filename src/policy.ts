@@ -80,7 +80,18 @@ export const AdmissionTableSchema = z.record(z.string(), AdmissionRowSchema)
 export const SourcePolicySchema = z.object({ allowed: z.array(AllowedSchema).default([]), admission: AdmissionTableSchema.default({}) }).catchall(z.unknown())
 export type SourcePolicy = z.infer<typeof SourcePolicySchema>
 /** Local MSP signals arrive with no sender, so the admission table is the only thing that can let them in; default it open for this Source alone. Parsed, since a `default` value is used as-is and would otherwise lack the `allowed` list. */
-const DEFAULT_SOURCES: Record<string, SourcePolicy> = { msp: SourcePolicySchema.parse({ admission: { ambient: { unlistedUnaddressed: 'inferred' } } }) }
+/**
+ * What each local Source admits when the operator has not said otherwise.
+ *
+ * Both are sender-less local events: a file appearing, or a machine's own signal. With no sender there is no one to put
+ * on an allowed list, so `unlistedUnaddressed` is the only cell that can decide them, and `ignore` — the global default,
+ * which suits a remote API — would admit every event and then open nothing. The rows are declared by each kind's
+ * `policy` part; this is only the value used until an operator picks one.
+ */
+const DEFAULT_SOURCES: Record<string, SourcePolicy> = {
+  msp: SourcePolicySchema.parse({ admission: { ambient: { unlistedUnaddressed: 'inferred' } } }),
+  'nene-inbox': SourcePolicySchema.parse({ admission: { ambient: { unlistedUnaddressed: 'inferred' } } }),
+}
 export const PolicyConfigSchema = z.object({
   rules: z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs').default(DEFAULT_RULES),
   sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourcePolicySchema).default(DEFAULT_SOURCES),
@@ -156,8 +167,17 @@ const listened = (sources: SourceScope, source: string, meta: Record<string, unk
 function admissionCell(allowed: boolean, addressed: boolean): AdmissionCell | undefined {
   return allowed ? addressed ? undefined : 'listedUnaddressed' : addressed ? 'unlistedAddressed' : 'unlistedUnaddressed'
 }
+/**
+ * The admission an operator chose for a cell, else the Source's own default, else the global one.
+ *
+ * The middle step matters: `DEFAULT_SOURCES` is the default for the whole `sources` record, so it never reaches a
+ * deployment whose Settings already hold a `sources` map — which every configured deployment does. Reading it here is
+ * what makes a kind's declared default apply to a row the operator has not touched.
+ */
 function admissionOf(settings: Settings, source: string, row: string | undefined, cell: AdmissionCell): Admission {
-  return (row === undefined ? undefined : settings.policy.sources[source]?.admission[row]?.[cell]) ?? ADMISSION_DEFAULTS[cell]
+  return (row === undefined ? undefined : settings.policy.sources[source]?.admission[row]?.[cell])
+    ?? (row === undefined ? undefined : DEFAULT_SOURCES[source]?.admission?.[row]?.[cell])
+    ?? ADMISSION_DEFAULTS[cell]
 }
 const STRENGTH: Readonly<Record<Admission, number>> = { ignore: 0, inferred: 1, explicit: 2 }
 
