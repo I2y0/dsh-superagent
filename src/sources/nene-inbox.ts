@@ -61,7 +61,7 @@ const WatchedSchema = z.object({
    * so this takes anything and normalises to `undefined`. Same trap as `human` one commit back: every optional field
    * here has to accept what a text cell sends, or one empty cell rejects the whole save.
    */
-  actor: z.string().optional().transform(value => (value ?? '').trim() || undefined),
+  actor: z.string().optional().transform(value => (value ?? '').trim() || 'seat'),
 }).strict()
 
 export const NeneInboxConfigSchema = z.object({
@@ -112,7 +112,8 @@ export const neneInboxKind: SourceKind<NeneInboxConfig> = {
       // the panel unusable for the only case this kind needs first (watch everything in a mailbox).
       { key: 'extensions', label: { zh: '只收这些扩展名（空=全部）', en: 'Extensions' }, type: 'text', optional: true },
       { key: 'human', label: { zh: '这个目录算人提的要求（1/0）', en: 'A file here is a request from a person (1/0)' }, type: 'text', optional: true },
-      { key: 'actor', label: { zh: '算谁的账号', en: 'Account' }, type: 'text', optional: true },
+      // 留空就是 `seat`：这个部署里「人」的那个节点就叫 seat，派活也一直用它。
+      { key: 'actor', label: { zh: '算谁的账号（空=seat）', en: 'Account (empty = seat)' }, type: 'text', optional: true },
     ] },
     { key: 'settleMs', label: { zh: '文件稳定多久才认 / 毫秒', en: 'Settle time / ms' }, type: 'number', advanced: true, min: 100, max: 60_000 },
   ],

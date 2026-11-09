@@ -11,7 +11,7 @@ declare const WatchedSchema: z.ZodObject<{
   extensions: z.ZodPipe<z.ZodDefault<z.ZodUnion<readonly [z.ZodString, z.ZodArray<z.ZodString>]>>, z.ZodTransform<string[], string | string[]>>;
   recursive: z.ZodDefault<z.ZodBoolean>;
   human: z.ZodPipe<z.ZodDefault<z.ZodUnion<readonly [z.ZodBoolean, z.ZodString]>>, z.ZodTransform<boolean, string | boolean>>;
-  actor: z.ZodPipe<z.ZodOptional<z.ZodString>, z.ZodTransform<string | undefined, string | undefined>>;
+  actor: z.ZodPipe<z.ZodOptional<z.ZodString>, z.ZodTransform<string, string | undefined>>;
 }, z.core.$strict>;
 declare const NeneInboxConfigSchema: z.ZodObject<{
   dirs: z.ZodDefault<z.ZodArray<z.ZodObject<{
@@ -20,7 +20,7 @@ declare const NeneInboxConfigSchema: z.ZodObject<{
     extensions: z.ZodPipe<z.ZodDefault<z.ZodUnion<readonly [z.ZodString, z.ZodArray<z.ZodString>]>>, z.ZodTransform<string[], string | string[]>>;
     recursive: z.ZodDefault<z.ZodBoolean>;
     human: z.ZodPipe<z.ZodDefault<z.ZodUnion<readonly [z.ZodBoolean, z.ZodString]>>, z.ZodTransform<boolean, string | boolean>>;
-    actor: z.ZodPipe<z.ZodOptional<z.ZodString>, z.ZodTransform<string | undefined, string | undefined>>;
+    actor: z.ZodPipe<z.ZodOptional<z.ZodString>, z.ZodTransform<string, string | undefined>>;
   }, z.core.$strict>>>;
   settleMs: z.ZodDefault<z.ZodNumber>;
 }, z.core.$strict>;
