@@ -176,12 +176,36 @@ export function sceneSession(areasFile: string | null, scene: string): string | 
 }
 
 /**
- * A letter whose file name marks it urgent, in the same shape nene's own mailbox rule uses (`SEAT_URGENT_RE`).
+ * Markers a letter carries in its file name. All English, all the same shape (`-word-`), so none of them can be
+ * confused with a word inside a name.
  *
- * The name is the only thing a watcher can read before the letter is opened, and the person sending it is the one who
- * decides it is urgent — the marker has to be written by them, not guessed from the text.
+ * `reply` and `urgent` both mean "report back as soon as it is done"; they differ in what happens when the scene's
+ * resident Session is busy: an urgent letter is taken by a worker instead of waiting, a reply-now letter waits like any
+ * other. `amend` is a supplement to a letter already sent — more to say, or a change of mind — so it goes into whatever
+ * that Session is doing rather than queueing behind it.
  */
-export const URGENT_LETTER_RE = /-马上回-/
+export const REPLY_LETTER_RE = /-reply-/i
+export const URGENT_LETTER_RE = /-urgent-/i
+export const AMEND_LETTER_RE = /-amend-/i
+
+/** The markers a letter's name carries, read once and passed on with the choice. */
+export interface LetterMarks { reply: boolean; urgent: boolean; amend: boolean }
+export const letterMarks = (name: string): LetterMarks => ({
+  reply: REPLY_LETTER_RE.test(name), urgent: URGENT_LETTER_RE.test(name), amend: AMEND_LETTER_RE.test(name),
+})
+
+/** What a mailbox's scene can be reached through, and whether it is busy right now. */
+export interface MailboxTarget {
+  /** The Scene's resident Session; `undefined` when `areas.json` names none. */
+  session?: string
+  /** Whether that Session has a turn running. */
+  busy: boolean
+}
+
+/** How the route handler answers "who owns this mailbox, and is it busy" for a rule that only notifies. */
+export interface MailboxOptions {
+  target: (scene: string) => MailboxTarget
+}
 
 /**
  * What a scene's Session is told when a letter reaches its mailbox.
@@ -420,15 +444,24 @@ export interface AutoRouteChoice {
    * `urgent` comes from the file name (`-马上回-`), and it decides the delivery mode rather than whether to deliver: an
    * urgent letter goes into the Session's running turn, an ordinary one waits for its next.
    */
-  notify?: { scene: string; title: string; path: string; urgent: boolean }
+  /**
+   * For `notify`: the scene whose Session is told, the file it is told to read, the markers its name carries, and how
+   * the message should be delivered — `steer` for a supplement that must reach a turn already running, `queue` for
+   * everything else.
+   */
+  notify?: { scene: string; title: string; path: string; marks: LetterMarks; delivery: 'queue' | 'steer' }
+  /** For `accept` on a mailbox rule: the letter became a ticket instead of a notice, and this says why. */
+  escalated?: 'no-session' | 'busy-urgent'
 }
 
 /**
  * Build the Assessment a candidate would have received from the main Session.
+ * @param mailbox how to reach the Scene a mailbox's letter names, and whether it is busy; without it a `notify` rule
+ *   still notifies (it cannot know better), so a reader that forgets it loses only the busy/urgent distinction.
  * @returns the choice for `assessmentOutcome`, or `undefined` when the candidate is not configured work.
  */
 export function autoRouteAssessment(candidate: Candidate, settings: Settings, config: AutoRouteConfig | undefined,
-  onMiss?: (message: string) => void): AutoRouteChoice | undefined {
+  onMiss?: (message: string) => void, mailbox?: MailboxOptions): AutoRouteChoice | undefined {
   if (!config) return undefined
   const resolution = resolveCandidate(candidate, config, onMiss)
   if (!resolution) return undefined
@@ -448,13 +481,51 @@ export function autoRouteAssessment(candidate: Candidate, settings: Settings, co
           : `Auto-route ${rule.id}: «${title}» hands no work to a worker, so the chat path answers it`
       : `Auto-route ${rule.id} settled by rule ${rule.rule} instead`,
   }))
+  /**
+   * The ticket this rule opens, said the same way whether the rule accepted the dispatch outright or a mailbox's letter
+   * had to become one: a scene whose mailbox has no Session, or an urgent letter while that Session is busy.
+   */
+  const ticketChoice = (reason: string, evidence: string): AutoRouteChoice => {
+    const ownScope = typeof payload.scope === 'string' && payload.scope.trim() ? payload.scope.trim() : undefined
+    const scope = rule.payloadScope && ownScope ? ownScope : rule.scope ?? ownScope ?? `Only what the title names: ${title}`
+    return {
+      decision: 'accept',
+      assessment: {
+        decision: 'accept',
+        rule_assessments: ruleAssessments,
+        direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence },
+        title: title.slice(0, 160),
+        worktree_name: `${rule.worktree}-${taskSegment(payload, trigger.id)}`.slice(0, 32),
+        scope: scope.slice(0, 1500),
+        intent_evidence: evidence,
+        reason,
+      },
+    }
+  }
+
   if (resolution.decision === 'notify') {
     // The file itself is the message: the Session reads it, not a summary of it.
     const file = typeof payload.path === 'string' ? payload.path : ''
-    const urgent = URGENT_LETTER_RE.test(title) || URGENT_LETTER_RE.test(file)
+    const marks = letterMarks(`${title} ${file}`)
+    const target = mailbox ? mailbox.target(resolution.detail) : undefined
+    // A mailbox whose scene owns no Session would otherwise become a candidate card: a person would have to re-drop a
+    // letter that is work for that scene. A worker takes it instead, so nothing is lost. Only when the caller can tell
+    // us about Sessions at all (`mailbox`): a caller that cannot must keep the plain notify it had before.
+    if (mailbox && !target?.session) {
+      return ticketChoice(
+        `Auto-route ${rule.id}: no Session owns the ${resolution.detail} mailbox, so «${title}» is done by a worker`,
+        `Auto-route ${rule.id}: areas.json names no Session for the ${resolution.detail} mailbox, so the letter «${title}» becomes a ticket instead of waiting for a reader that does not exist.`)
+    }
+    // Busy and urgent is the only combination that leaves the resident Session out of it. Deliberately with no notify as
+    // well: two consumers reading one letter is exactly how the double-work bug happened (2026-11-09, letters 0025/0026).
+    if (target?.session && target.busy && marks.urgent) {
+      return ticketChoice(
+        `Auto-route ${rule.id}: the ${resolution.detail} Session is busy and «${title}» is urgent, so a worker takes it`,
+        `Auto-route ${rule.id}: «${title}» carries -urgent- while the ${resolution.detail} Session has a turn running, so a worker does it now instead of queueing behind that turn.`)
+    }
     return {
       decision: 'notify',
-      notify: { scene: resolution.detail, title, path: file, urgent },
+      notify: { scene: resolution.detail, title, path: file, marks, delivery: marks.amend ? 'steer' as const : 'queue' as const },
       assessment: {
         decision: 'ignore',
         rule_assessments: ruleAssessments,
@@ -489,30 +560,12 @@ export function autoRouteAssessment(candidate: Candidate, settings: Settings, co
       },
     }
   }
-  const ownScope = typeof payload.scope === 'string' && payload.scope.trim() ? payload.scope.trim() : undefined
-  const scope = rule.payloadScope && ownScope ? ownScope : rule.scope ?? ownScope ?? `Only what the title names: ${title}`
-  return {
-    decision: 'accept',
-    assessment: {
-      decision: 'accept',
-      rule_assessments: ruleAssessments,
-      direction: {
-        implementation_requested: true,
-        target_basis: 'specified',
-        requires_design_decision: false,
-        evidence: `Auto-route ${rule.id}: the sender's own message «${title}» ${resolution.how === 'prefix'
-          ? `carries the simple-work prefix ${resolution.detail}`
-          : `hands the work over with the phrase ${resolution.detail}`}`,
-      },
-      title: title.slice(0, 160),
-      worktree_name: `${rule.worktree}-${taskSegment(payload, trigger.id)}`.slice(0, 32),
-      scope: scope.slice(0, 1500),
-      intent_evidence: resolution.how === 'prefix'
-        ? `The dispatch title «${title}» carries the configured prefix ${resolution.detail}, so it is simple work under auto-route rule ${rule.id}.`
-        : `The message «${title}» says ${resolution.detail}, which hands the work to a worker under auto-route rule ${rule.id}.`,
-      reason: resolution.how === 'prefix'
-        ? `Auto-route ${rule.id}: title prefix ${resolution.detail}`
-        : `Auto-route ${rule.id}: dispatch phrase ${resolution.detail}`,
-    },
-  }
+  const evidence = `Auto-route ${rule.id}: the sender's own message «${title}» ${resolution.how === 'prefix'
+    ? `carries the simple-work prefix ${resolution.detail}`
+    : `hands the work over with the phrase ${resolution.detail}`}`
+  return ticketChoice(
+    resolution.how === 'prefix'
+      ? `Auto-route ${rule.id}: title prefix ${resolution.detail}`
+      : `Auto-route ${rule.id}: dispatch phrase ${resolution.detail}`,
+    evidence)
 }

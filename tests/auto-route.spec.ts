@@ -54,7 +54,9 @@ function harness(config: unknown = CONFIG, settings = SettingsSchema.parse({}), 
   /** Records every notify delivery the route handler makes, so the mode it chose can be asserted. */
   onNotify: (sessionId: string, requestId: string, text: string, mode: 'queue' | 'steer') => void = () => {},
   /** 换一个 stateDir（测试 `notify` 时要先把 areas.json 和规则一起写进去）。 */
-  stateDirOverride?: string) {
+  stateDirOverride?: string,
+  /** 哪些会话此刻「有 turn 在跑」—— 决定「忙 + 急」的信是不是交给 worker。 */
+  busyOf: (sessionId: string) => boolean = () => false) {
   const stateDir = stateDirOverride ?? mkdtempSync(join(tmpdir(), 'auto-route-'))
   if (config !== undefined) writeFileSync(join(stateDir, 'auto-route.json'), JSON.stringify(config))
   const repo = new MemoryRepositories()
@@ -75,6 +77,7 @@ function harness(config: unknown = CONFIG, settings = SettingsSchema.parse({}), 
     settings: () => settings,
     warn: (message: string) => { warned.push(message) },
     notifySession: async (sessionId, requestId, text, mode) => { onNotify(sessionId, requestId, text, mode) },
+    busy: sessionId => busyOf(sessionId),
     threadContext: () => undefined,
     effects,
     paused: () => false,
@@ -225,57 +228,94 @@ it('reads an edit of the rules file on the next evaluation, and treats a malform
   expect(loadAutoRoute(dir)).toBeUndefined()
 })
 
-// ★ 一封信交给常驻会话时，送法由文件名决定，不由谁写规则决定：
-//   标了「马上回」的信要进正在跑的那一轮（steer），普通的等下一轮（queue）。
-//   这一条以前写在方案里、代码里没有 —— 急信和普通信走的是同一个 'queue'。
-describe('交给会话的信：急信插队，普通信排队', () => {
+// ★ 一封信交给常驻会话时，怎么送由**文件名里的标记**决定，不由谁写规则决定（2026-11-09 凉酱定）：
+//   普通 / -reply- / 闲时的 -urgent-  → 排队（queue），等它这一轮结束
+//   -amend-（补充、改主意）          → 插进正在跑的那一轮（steer）
+//   -urgent- 且常驻正忙              → 不进会话，交给 worker（只开票、不 notify：两个消费者读同一封信就是双干）
+//   那个场景压根没有会话             → 也交给 worker（否则这封信只能等人重投）
+describe('场景信箱：一封信该谁读、怎么送', () => {
   const notifyRule = (id: string, role: string) => ({
     id, source: 'nene-inbox', prefixes: [], phrases: [], paths: [`file.created.${role}`], sceneFromPath: false,
     notify: true, senders: [], chatTypes: [], rule: 'msp-local', worktree: 'task',
     payloadScope: true, otherwise: 'card', actor: '', human: false,
   })
-  const config = (role: string) => AutoRouteConfigSchema.parse({
-    enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [notifyRule('mailbox', role)],
-  })
   const areasFile = (stateDir: string) => {
     const areas = join(stateDir, 'areas.json')
-    writeFileSync(areas, JSON.stringify({ areas: [{ scene: 'nene', sceneId: 'nene', session: 'session-seat', role: 'nene' }] }))
+    writeFileSync(areas, JSON.stringify({ areas: [
+      { scene: 'nene', sceneId: 'nene', session: 'session-seat', role: 'nene' },
+    ] }))
     return areas
   }
-  /** 一封投到座位信箱的信，文件名决定它急不急。 */
+  /** 一封投到座位信箱的信；`name` 决定它带什么标记。 */
   const letter = (stateDir: string, name: string): Trigger => ({
     id: `nene-inbox:seat:${name}`, source: 'nene-inbox', human: false, at: '2026-11-09T10:00:00.000Z', text: '',
     threads: [{ source: 'nene-inbox', id: `inbox.seat.${name}` }], actor: { source: 'nene-inbox', id: '' },
     meta: { mspPath: 'file.created.seat', mspPayload: { name, path: join(stateDir, 'seat-inbox', name), bytes: 12 } },
   })
-  const withAreas = (stateDir: string) => {
-    // 必须**在 harness 之后**调用：harness 的默认参数是 CONFIG，传 undefined 也会把 CONFIG 写进 stateDir。
-    // 写完顺手把 mtime 推后 —— loadAutoRoute 按 mtime 缓存，不推会被当成没改。
-    const areas = areasFile(stateDir)
+  /**
+   * 必须**在 harness 之后**调用：harness 的默认参数是 CONFIG，传 undefined 也会把 CONFIG 写进 stateDir。
+   * 写完把 mtime 推后 —— `loadAutoRoute` 按 mtime 缓存，不推会被当成没改。
+   */
+  const withAreas = (stateDir: string, withSeat = true) => {
+    const areas = withSeat
+      ? areasFile(stateDir)
+      : (() => { const f = join(stateDir, 'areas.json'); writeFileSync(f, JSON.stringify({ areas: [] })); return f })()
     const file = join(stateDir, 'auto-route.json')
     writeFileSync(file, JSON.stringify({
       enabled: true, source: 'msp', sender: 'seat', humanOnly: false, rules: [notifyRule('mailbox', 'seat')], notifyAreas: areas,
     }))
     utimesSync(file, new Date(), new Date(Date.now() + 1000))
   }
-
-  it('★ 文件名带 -马上回- → steer（插进正在跑的那一轮）', async () => {
-    const calls: [string, string, string, string][] = []
-    const stateDir = mkdtempSync(join(tmpdir(), 'notify-urgent-'))
+  /** 跑一封信，回报「有没有 notify、用的什么 mode、有没有开票」。 */
+  const deliver = async (name: string, busy: boolean, withSeat = true) => {
+    const calls: { sessionId: string; mode: string }[] = []
+    const stateDir = mkdtempSync(join(tmpdir(), 'notify-mark-'))
     const s = harness(CONFIG, SettingsSchema.parse({}), 'inferred',
-      (id, requestId, text, mode) => calls.push([id, requestId, text, mode]), stateDir)
-    withAreas(stateDir)
-    await s.run(letter(stateDir, '0027-马上回-对一遍.md'))
-    expect(calls.map(call => call[3])).toEqual(['steer'])
+      (sessionId, _requestId, _text, mode) => calls.push({ sessionId, mode }), stateDir, () => busy)
+    withAreas(stateDir, withSeat)
+    await s.run(letter(stateDir, name))
+    return { calls, tickets: s.repo.tickets.list(), stateDir }
+  }
+
+  it('★ 普通信 → 排队（不打断）', async () => {
+    const { calls, tickets } = await deliver('0030-普通信.md', false)
+    expect(calls.map(call => call.mode)).toEqual(['queue'])
+    expect(tickets).toEqual([])
   })
 
-  it('★ 普通信 → queue（等下一轮，不打断）', async () => {
-    const calls: [string, string, string, string][] = []
-    const stateDir = mkdtempSync(join(tmpdir(), 'notify-queue-'))
-    const s = harness(CONFIG, SettingsSchema.parse({}), 'inferred',
-      (id, requestId, text, mode) => calls.push([id, requestId, text, mode]), stateDir)
-    withAreas(stateDir)
-    await s.run(letter(stateDir, '0028-普通信.md'))
-    expect(calls.map(call => call[3])).toEqual(['queue'])
+  it('★ -reply- 只要求做完立刻回执，送法和普通信一样 → 排队', async () => {
+    const { calls, tickets } = await deliver('0031-reply-做完立刻回执.md', false)
+    expect(calls.map(call => call.mode)).toEqual(['queue'])
+    expect(tickets).toEqual([])
+    // 忙的时候也一样：reply 不吃忙闲。
+    const busy = await deliver('0032-reply-忙也排队.md', true)
+    expect(busy.calls.map(call => call.mode)).toEqual(['queue'])
+    expect(busy.tickets).toEqual([])
+  })
+
+  it('★ -urgent- 而常驻空闲 → 照常排队（不开 worker）', async () => {
+    const { calls, tickets } = await deliver('0033-urgent-闲.md', false)
+    expect(calls.map(call => call.mode)).toEqual(['queue'])
+    expect(tickets).toEqual([])
+  })
+
+  it('★ -urgent- 而常驻正忙 → 开一线 worker，且**不 notify**（两个消费者就是双干）', async () => {
+    const { calls, tickets } = await deliver('0034-urgent-忙.md', true)
+    expect(calls).toEqual([])
+    expect(tickets).toHaveLength(1)
+  })
+
+  it('★ -amend-（补充 / 改主意）→ 插进正在跑的那一轮，忙闲都插', async () => {
+    for (const busy of [false, true]) {
+      const { calls, tickets } = await deliver(`0035-amend-补充-${busy ? '忙' : '闲'}.md`, busy)
+      expect(calls.map(call => call.mode)).toEqual(['steer'])
+      expect(tickets).toEqual([])
+    }
+  })
+
+  it('★ 那个场景没有会话 → 交给 worker，别让信等人重投', async () => {
+    const { calls, tickets } = await deliver('0036-没人读的信.md', false, false)
+    expect(calls).toEqual([])
+    expect(tickets).toHaveLength(1)
   })
 })

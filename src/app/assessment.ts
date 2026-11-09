@@ -65,6 +65,13 @@ export interface AssessorHost {
    * @param mode `queue` waits for the Session's next turn, `steer` goes into the running one
    */
   notifySession(sessionId: string, requestId: string, text: string, mode: 'queue' | 'steer'): Promise<void>
+  /**
+   * Whether a Session has a turn running right now.
+   *
+   * A mailbox rule needs it for one decision only: an urgent letter whose scene's resident Session is busy is done by a
+   * worker instead of queueing behind that turn. Read from the host's own agent status, not from another process's file.
+   */
+  busy(sessionId: string): boolean
   /** Whether processing is paused, which holds candidate deliveries. */
   paused(): boolean
   /** Thread context reader for `trigger`'s Source, or `undefined` when the Source has none. */
@@ -115,16 +122,21 @@ export class MasterAssessor implements Assessor {
       const candidate = this.host.engine.candidate(triggerId)
       if (candidate?.evalId !== evalId) return
       const settings = this.host.settings()
+      const areas = loadAutoRoute(this.host.deployment.stateDir)?.notifyAreas ?? null
       const choice = autoRouteAssessment(candidate, settings, loadAutoRoute(this.host.deployment.stateDir, message => this.host.warn(message)),
-        message => this.host.warn(message))
+        message => this.host.warn(message), {
+          // Who owns the mailbox's scene, and is it busy. `auto-route` uses this for two endings: no Session at all means
+          // the letter becomes a ticket, and an urgent letter while that Session is busy means a worker takes it.
+          target: scene => {
+            const session = sceneSession(areas, scene)
+            return { session, busy: !!session && this.host.busy(session) }
+          },
+        })
       if (choice?.decision === 'notify' && choice.notify) {
-        const sessionId = sceneSession(loadAutoRoute(this.host.deployment.stateDir)?.notifyAreas ?? null, choice.notify.scene)
-        // A letter marked urgent in its own name goes into the running turn; everything else waits for the next one.
-        // Both are the Session reading the letter itself — neither stops it, and neither opens a ticket.
-        const mode = choice.notify.urgent ? 'steer' as const : 'queue' as const
+        const sessionId = sceneSession(areas, choice.notify.scene)
         if (sessionId) {
           try {
-            await this.host.notifySession(sessionId, `notify:${triggerId}`, letterNotice(choice.notify), mode)
+            await this.host.notifySession(sessionId, `notify:${triggerId}`, letterNotice(choice.notify), choice.notify.delivery)
             this.host.engine.decide(triggerId, { kind: 'ignore', reason: { code: 'notified', values: { scene: choice.notify.scene } }, evalId })
             return
           } catch (error) {

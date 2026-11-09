@@ -131,6 +131,12 @@ export class Runtime extends Service implements SourceHost {
       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
         settings: () => store.settings(), warn: (message: string) => ctx.logger.warn('dsh-superagent: %s', message), paused: () => this.paused(),
         notifySession: (sessionId, requestId, text, mode) => sessions.prompt(sessionId, requestId, text, mode), threadContext: trigger => sources.threadContext(trigger),
+        // A Session with no loaded agent has no turn running. That is all `notify` needs to tell an urgent letter that
+        // waits (idle) from one a worker should take now (busy).
+        busy: sessionId => {
+          const agent = ctx.agents.get(sessionId as SessionId)
+          return !!agent && agent.status !== 'idle'
+        },
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused() })
       const { assessor, executor } = this

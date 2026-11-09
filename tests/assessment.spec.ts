@@ -39,6 +39,7 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   const host: AssessorHost = {
     get engine() { return engine }, commands, deployment: testDeployment(), warn: () => {},
     notifySession: async () => {},
+    busy: () => false,
     settings: () => SettingsSchema.parse({}),
     threadContext: threadContext ?? (trigger => sources.threadContext(trigger)),
     effects: { enqueue: () => {}, handle: () => {} }, paused: () => false, deliver: async () => {}, candidateCard: async candidate => ({ eval_id: candidate.evalId }),
