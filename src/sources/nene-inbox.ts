@@ -139,10 +139,10 @@ interface Settled { name: string; path: string; bytes: number; at: string }
 /**
  * Watches the configured directories and reports each file it settles on.
  *
- * Until the next step calls `receive()`, every accepted file is only reported: the panel shows the Trigger a file would
- * have produced, and nothing is opened. That is how the watcher is proved correct before it can cost anything.
+ * Every accepted file becomes a Trigger and is ingested with `receive()`, which is where this Source's responsibility
+ * ends: routing, tickets and workers all belong to the host.
  */
-async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
   if (signal.aborted) return
   const config = ctx.config<NeneInboxConfig>(SOURCE)
@@ -160,10 +160,17 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   const accept = (watched: Watched, settled: Settled): void => {
     const trigger = buildTrigger(watched, settled.name, settled.path, settled.bytes, settled.at)
     seen += 1
+    // Reported before `receive()`: if ingesting throws, the panel still shows which file caused it.
     ctx.report(SOURCE, {
       state: 'ready',
       detail: `${watched.role}: ${settled.name} ${settled.bytes}B → ${trigger.meta.mspPath}`
-        + `（线程 ${trigger.threads[0]?.id}）· 已认 ${seen} 个 · 尚未接入 Engine`,
+        + `（线程 ${trigger.threads[0]?.id}）· 已交 ${seen} 个`,
+    })
+    Promise.resolve(ctx.receive(trigger)).catch((error: unknown) => {
+      ctx.report(SOURCE, {
+        state: 'error',
+        detail: `${watched.role}: ${settled.name} 交不进 Engine：${error instanceof Error ? error.message : String(error)}`,
+      })
     })
   }
 
