@@ -65,7 +65,7 @@ describe('kind 的形状', () => {
 })
 
 describe('一个文件 → 一条 Trigger', () => {
-  const watched = { path: 'C:/nene/3-scenes/qq/inbox', role: 'qq', extensions: [] as string[], recursive: false, human: false }
+  const watched = { path: 'C:/nene/3-scenes/qq/inbox', role: 'qq', extensions: [] as string[], recursive: false, human: false, actor: undefined }
   const trigger = buildTrigger(watched, '0001-a.md', 'C:/nene/3-scenes/qq/inbox/0001-a.md', 744, '2026-11-09T10:00:00.000Z')
 
   it('★ actor 必须是空的 —— 机器事件不能冒充人的请求', () => {
@@ -96,7 +96,7 @@ describe('一个文件 → 一条 Trigger', () => {
 })
 
 describe('哪些文件算数', () => {
-  const base = { path: 'C:/x', role: 'qq', recursive: false, human: false }
+  const base = { path: 'C:/x', role: 'qq', recursive: false, human: false, actor: undefined }
   it('默认全收', () => {
     expect(wanted({ ...base, extensions: [], human: false }, 'a.md')).toBe(true)
     expect(wanted({ ...base, extensions: [], human: false }, 'a.zip')).toBe(true)
@@ -150,7 +150,7 @@ describe('准入的表行', () => {
 // ★ 派活要保住 explicit。文件事件天生是 inferred（没有发送者、没点名），
 //   所以「这个目录算人提的要求」必须由配置说出来，否则派活会从「立刻生效」变成「排队等模型」。
 describe('human 目录：文件代表一个人提的要求', () => {
-  const base = { path: 'C:/nene/2-shared/dispatch', role: 'dispatch', extensions: [], recursive: false }
+  const base = { path: 'C:/nene/2-shared/dispatch', role: 'dispatch', extensions: [], recursive: false, actor: undefined as string | undefined }
 
   it('★ human: true + actor → actor 是那个账号、human、addressed=direct', () => {
     const t = buildTrigger({ ...base, human: true, actor: 'seat' }, '0001.json', 'C:/nene/2-shared/dispatch/0001.json', 10, '2026-11-09T13:30:00.000Z')
@@ -192,5 +192,22 @@ describe('human 两种写法都收', () => {
   })
   it('不写 → false', () => {
     expect(parse(undefined)).toBe(false)
+  })
+})
+
+// ★ actor 那一格留空是常态（非 human 目录都用不上），而表单发的是 ''。
+//   要求「至少一个字」会让整份保存失败 —— 和 human 同一个坑。
+describe('actor 留空是合法的', () => {
+  const parse = (actor: unknown) =>
+    NeneInboxConfigSchema.parse({ dirs: [{ path: 'C:/x', role: 'qq', actor }] }).dirs[0]!.actor
+
+  it('★ 空字符串 → undefined', () => {
+    expect(parse('')).toBeUndefined()
+  })
+  it('★ 不写 → undefined', () => {
+    expect(parse(undefined)).toBeUndefined()
+  })
+  it('写了就留着（去掉首尾空格）', () => {
+    expect(parse('  seat ')).toBe('seat')
   })
 })

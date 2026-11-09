@@ -54,8 +54,14 @@ const WatchedSchema = z.object({
   human: z.union([z.boolean(), z.string()]).default(false)
     .transform(value => (typeof value === 'boolean' ? value
       : /^(1|true|yes|y|on|是)$/i.test(String(value).trim()))),
-  /** The account a `human` directory speaks for; it must be on the Source's allowed list. Empty means no account. */
-  actor: z.string().trim().min(1).optional(),
+  /**
+   * The account a `human` directory speaks for; it must be on the Source's allowed list.
+   *
+   * An empty cell is the normal case (the directory is not `human`), and the form sends `''` rather than omitting it,
+   * so this takes anything and normalises to `undefined`. Same trap as `human` one commit back: every optional field
+   * here has to accept what a text cell sends, or one empty cell rejects the whole save.
+   */
+  actor: z.string().optional().transform(value => (value ?? '').trim() || undefined),
 }).strict()
 
 export const NeneInboxConfigSchema = z.object({

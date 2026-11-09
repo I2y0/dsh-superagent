@@ -14,7 +14,7 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 /** 一个只够这个 Source 用的假上下文：记下每一次 receive 与每一次 report。 */
-function fakeContext(dirs: { path: string; role: string; extensions: string[]; recursive: boolean; human: boolean }[], settleMs = 100) {
+function fakeContext(dirs: { path: string; role: string; extensions: string[]; recursive: boolean; human: boolean; actor?: string }[], settleMs = 100) {
   const received: Trigger[] = []
   const reported: { state: string; detail: string }[] = []
   const ctx = {
@@ -34,7 +34,7 @@ describe('监听循环', () => {
     roots.push(root)
     const inbox = join(root, 'inbox')
     mkdirSync(inbox, { recursive: true })
-    const { ctx, received } = fakeContext([{ path: inbox.replaceAll('\\', '/'), role: 'workshop', extensions: [], recursive: false, human: false }])
+    const { ctx, received } = fakeContext([{ path: inbox.replaceAll('\\', '/'), role: 'workshop', extensions: [], recursive: false, human: false, actor: undefined }])
 
     const controller = new AbortController()
     const running = watch(ctx, controller.signal)
@@ -57,7 +57,7 @@ describe('监听循环', () => {
   it('★ 同一个文件只交一次（兜底扫描每秒都在跑）', async () => {
     const root = mkdtempSync(join(tmpdir(), 'nene-inbox-once-'))
     roots.push(root)
-    const { ctx, received } = fakeContext([{ path: root.replaceAll('\\', '/'), role: 'qq', extensions: [], recursive: false, human: false }])
+    const { ctx, received } = fakeContext([{ path: root.replaceAll('\\', '/'), role: 'qq', extensions: [], recursive: false, human: false, actor: undefined }])
 
     const controller = new AbortController()
     const running = watch(ctx, controller.signal)
@@ -74,7 +74,7 @@ describe('监听循环', () => {
     const root = mkdtempSync(join(tmpdir(), 'nene-inbox-existing-'))
     roots.push(root)
     writeFileSync(join(root, '0001-old.md'), 'old', 'utf8')
-    const { ctx, received } = fakeContext([{ path: root.replaceAll('\\', '/'), role: 'qq', extensions: [], recursive: false, human: false }])
+    const { ctx, received } = fakeContext([{ path: root.replaceAll('\\', '/'), role: 'qq', extensions: [], recursive: false, human: false, actor: undefined }])
 
     const controller = new AbortController()
     const running = watch(ctx, controller.signal)
@@ -105,7 +105,7 @@ describe('配置热更新', () => {
     roots.push(root)
     const received: Trigger[] = []
     // 会变的配置：先空，1.2 秒后出现 workshop
-    let dirs: { path: string; role: string; extensions: string[]; recursive: boolean; human: boolean }[] = []
+    let dirs: { path: string; role: string; extensions: string[]; recursive: boolean; human: boolean; actor?: string }[] = []
     const ctx = {
       ready: Promise.resolve(),
       config: () => ({ dirs, settleMs: 100 }),
@@ -118,7 +118,7 @@ describe('配置热更新', () => {
     await sleep(200)
     expect(received).toHaveLength(0)                 // 还没配
 
-    dirs = [{ path: root.split(String.fromCharCode(92)).join('/'), role: 'workshop', extensions: [], recursive: false, human: false }]
+    dirs = [{ path: root.split(String.fromCharCode(92)).join('/'), role: 'workshop', extensions: [], recursive: false, human: false, actor: undefined }]
     await sleep(1400)                                // 让它重读到配置并开 watch
     writeFileSync(join(root, '0001-a.md'), 'x', 'utf8')
     await sleep(1600)
@@ -133,7 +133,7 @@ describe('配置热更新', () => {
     const root = mkdtempSync(join(tmpdir(), 'nene-inbox-drop-'))
     roots.push(root)
     const received: Trigger[] = []
-    let dirs = [{ path: root.split(String.fromCharCode(92)).join('/'), role: 'qq', extensions: [], recursive: false, human: false }]
+    let dirs = [{ path: root.split(String.fromCharCode(92)).join('/'), role: 'qq', extensions: [], recursive: false, human: false, actor: undefined }]
     const ctx = {
       ready: Promise.resolve(),
       config: () => ({ dirs, settleMs: 100 }),
