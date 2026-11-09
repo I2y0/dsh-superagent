@@ -8,14 +8,14 @@ declare const SOURCE = "nene-inbox";
 declare const WatchedSchema: z.ZodObject<{
   path: z.ZodString;
   role: z.ZodString;
-  extensions: z.ZodDefault<z.ZodArray<z.ZodString>>;
+  extensions: z.ZodPipe<z.ZodDefault<z.ZodUnion<readonly [z.ZodString, z.ZodArray<z.ZodString>]>>, z.ZodTransform<string[], string | string[]>>;
   recursive: z.ZodDefault<z.ZodBoolean>;
 }, z.core.$strict>;
 declare const NeneInboxConfigSchema: z.ZodObject<{
   dirs: z.ZodDefault<z.ZodArray<z.ZodObject<{
     path: z.ZodString;
     role: z.ZodString;
-    extensions: z.ZodDefault<z.ZodArray<z.ZodString>>;
+    extensions: z.ZodPipe<z.ZodDefault<z.ZodUnion<readonly [z.ZodString, z.ZodArray<z.ZodString>]>>, z.ZodTransform<string[], string | string[]>>;
     recursive: z.ZodDefault<z.ZodBoolean>;
   }, z.core.$strict>>>;
   settleMs: z.ZodDefault<z.ZodNumber>;

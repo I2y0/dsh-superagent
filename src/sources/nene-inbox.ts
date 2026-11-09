@@ -31,8 +31,15 @@ const WatchedSchema = z.object({
   path: z.string().trim().min(1),
   /** The mailbox's name, appended to the signal path (`file.created.<role>`), which routing rules match on. */
   role: z.string().trim().regex(/^[a-z][a-z0-9-]*$/),
-  /** Only these extensions count; empty counts every file. Compared case-insensitively, without the dot. */
-  extensions: z.array(z.string().trim().min(1)).default([]),
+  /**
+   * Only these extensions count; empty counts every file. Compared case-insensitively, without the dot.
+   *
+   * Accepts a list or one comma-separated cell: the panel's `rows` form gives a text cell a plain string, so a schema
+   * that insisted on an array made the form unsaveable — an empty cell arrived as `''` and was refused.
+   */
+  extensions: z.union([z.string(), z.array(z.string())]).default('')
+    .transform(value => (Array.isArray(value) ? value : String(value).split(','))
+      .map(item => item.trim().replace(/^\./, '').toLowerCase()).filter(Boolean)),
   /** Whether files inside subdirectories count too. Off by default: a mailbox is a flat directory. */
   recursive: z.boolean().default(false),
 }).strict()

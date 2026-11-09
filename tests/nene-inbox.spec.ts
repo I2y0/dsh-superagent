@@ -111,3 +111,23 @@ describe('哪些文件算数', () => {
     expect(wanted({ ...base, extensions: [] }, '.0001-a.md.swp')).toBe(false)
   })
 })
+
+// ★ 面板的 rows 表单给文本单元格的是**字符串**，不是数组。
+//   只收数组的 schema 会让整个表单存不下去（空单元格 = '' → 被拒），2026-11-09 就是这样卡住的。
+describe('extensions 两种写法都收', () => {
+  const parse = (extensions: unknown) =>
+    NeneInboxConfigSchema.parse({ dirs: [{ path: 'C:/x', role: 'qq', extensions }] }).dirs[0]!.extensions
+
+  it('★ 空字符串（表单留空）→ 收全部', () => {
+    expect(parse('')).toEqual([])
+  })
+  it('★ 逗号分隔的一格 → 拆成数组，去掉点和大小写', () => {
+    expect(parse('MD, .Pdf')).toEqual(['md', 'pdf'])
+  })
+  it('★ 数组（JSON 直接写）照旧', () => {
+    expect(parse(['md'])).toEqual(['md'])
+  })
+  it('不写 → 空数组', () => {
+    expect(parse(undefined)).toEqual([])
+  })
+})
