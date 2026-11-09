@@ -406,7 +406,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts`, `src/sources/feishu.ts` and `src/sources/msp.ts` are the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch` and `./msp-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with Feishu and MSP disabled.
+`src/sources/github.ts`, `src/sources/feishu.ts` and `src/sources/msp.ts` are the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch` and `./msp-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with Feishu and MSP disabled. `nene-inbox` is built as `./nene-inbox-watch` too, but a profile inserts it rather than the bundle: a row of the same id in both layers left the bundle's `disabled: true` in force, so the plugin never loaded.
 
 ## Tests
 
