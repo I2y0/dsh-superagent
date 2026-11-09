@@ -163,11 +163,16 @@ export function sceneSession(areasFile: string | null, scene: string): string | 
   try { parsed = JSON.parse(readFileSync(areasFile, 'utf8')) } catch { return undefined }
   const areas = (parsed as { areas?: unknown })?.areas
   if (!Array.isArray(areas)) return undefined
-  const row = areas.find((entry: unknown) => {
-    const area = entry as { role?: unknown; sceneId?: unknown; scene?: unknown; session?: unknown } | null
-    return !!area && area.role === 'shadow' && String(area.sceneId ?? area.scene ?? '') === scene && typeof area.session === 'string' && area.session
-  }) as { session?: string } | undefined
-  return row?.session
+  const sessionOf = (wanted: (area: { role?: unknown; sceneId?: unknown; scene?: unknown }) => boolean) =>
+    (areas.find((entry: unknown) => {
+      const area = entry as { role?: unknown; sceneId?: unknown; scene?: unknown; session?: unknown } | null
+      return !!area && wanted(area) && typeof area.session === 'string' && !!area.session
+    }) as { session?: string } | undefined)?.session
+  const sceneOf = (area: { sceneId?: unknown; scene?: unknown }) => String(area.sceneId ?? area.scene ?? '')
+  // A mailbox role names the scene; the seat is not a scene but an account (`role: 'nene'`), and its mailbox has to
+  // reach it rather than open a ticket — so `seat` and `nene` both resolve to that account.
+  if (scene === 'seat' || scene === 'nene') return sessionOf(area => area.role === 'nene')
+  return sessionOf(area => area.role === 'shadow' && sceneOf(area) === scene)
 }
 
 /**

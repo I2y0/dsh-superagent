@@ -69,8 +69,11 @@ describe('场景 → 会话 从 areas.json 读', () => {
     expect(sceneSession(file, 'workshop')).toBe('session-workshop')
   })
 
-  it('★ 不会把座位自己（role=nene）当成某个场景的会话', () => {
-    expect(sceneSession(file, 'nene')).toBeUndefined()
+  // 2026-11-09 改：座位信箱也要走 notify（不再开票给 worker），所以 `seat` / `nene` 要解析到座位。
+  // 不变的是：**别名的场景查询不许把座位抢走** —— 那才是这条原来守的东西。
+  it('★ 查场景时不会把座位当成场景的会话', () => {
+    expect(sceneSession(file, 'qq')).toBe('session-qq')
+    expect(sceneSession(file, 'ghost')).toBeUndefined()
   })
 
   it('没配置 / 读不到 / 没这个场景 → undefined（调用方据此降级开票，不许静默丢信）', () => {
@@ -120,5 +123,30 @@ describe('规则可以声明自己服务哪个 Source', () => {
       { triggers: [{ ...signal('C:/x/0001-a.md'), source: 'msp' }] } as never,
       settings, config(rule({ source: undefined })) as never)
     expect(inherited?.decision).toBe('notify')
+  })
+})
+
+// ★ 座位信箱：座位不是「场景」，是 areas.json 里 role=nene 的那个账号。
+//   不认它的话，座位信箱的信会被开票 —— 派一个 worker 去读给座位看的信。
+describe('座位也是 notify 的目标', () => {
+  const file = join(dir, 'areas-seat.json')
+  writeFileSync(file, JSON.stringify({ areas: [
+    { scene: 'nene', sceneId: 'nene', session: 'session-seat', role: 'nene' },
+    { scene: 'qq', sceneId: 'qq', session: 'session-qq', role: 'shadow' },
+  ] }))
+
+  it('★ scene=seat → 座位会话', () => {
+    expect(sceneSession(file, 'seat')).toBe('session-seat')
+  })
+  it('★ scene=nene 也一样（两种写法都指同一个账号）', () => {
+    expect(sceneSession(file, 'nene')).toBe('session-seat')
+  })
+  it('★ 场景照旧按 shadow 找，不会被座位抢走', () => {
+    expect(sceneSession(file, 'qq')).toBe('session-qq')
+  })
+  it('seat 但 areas.json 里没有 nene 那条 → undefined（调用方降级开票，不静默丢信）', () => {
+    const onlyScene = join(dir, 'areas-noseat.json')
+    writeFileSync(onlyScene, JSON.stringify({ areas: [{ sceneId: 'qq', session: 'session-qq', role: 'shadow' }] }))
+    expect(sceneSession(onlyScene, 'seat')).toBeUndefined()
   })
 })

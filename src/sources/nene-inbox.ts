@@ -14,8 +14,7 @@
  * is ignored is the auto-route rule's business — a Source cannot prompt a Session, and should not try.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { appendFileSync, readdirSync, statSync, watch as watchDirectory } from 'node:fs'
-import { homedir } from 'node:os'
+import { readdirSync, statSync, watch as watchDirectory } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
 
@@ -153,23 +152,7 @@ export const neneInboxKind: SourceKind<NeneInboxConfig> = {
 export const name = 'dsh-superagent-nene-inbox'
 export const inject = ['orchestrator']
 
-/**
- * Writes one line where a person can find it when the plugin loads.
- *
- * This host keeps no persistent log, so a plugin that fails to load leaves nothing behind — which cost two restarts on
- * 2026-11-09 while `apply()` was fine all along. The marker says whether this ran at all, and it goes away with the
- * Temporary: it writes always, and it is removed once the plugin is confirmed to load.
- */
-function mark(step: string, detail = ''): void {
-  const file = process.env.NENE_INBOX_MARK
-    ?? join(homedir(), '.dsh', 'state', 'superagent', 'nene-inbox-apply.log')
-  try { appendFileSync(file, `${new Date().toISOString()}	${step}	${detail}
-`) } catch { /* diagnostics must not fail the plugin */ }
-}
-
 export function apply(ctx: Context): void {
-  mark('apply', `inject=${JSON.stringify(inject)}`)
-  ctx.effect(() => { mark('register'); return ctx.orchestrator.sources.register(neneInboxKind) }, 'nene-inbox: source kind')
   ctx.effect(() => {
     const source = sourceContext(ctx.orchestrator, neneInboxKind)
     const controller = new AbortController()
@@ -223,7 +206,6 @@ interface Settled { name: string; path: string; bytes: number; at: string }
  * ends: routing, tickets and workers all belong to the host.
  */
 export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
-  mark('watch-start')
   await ctx.ready
   if (signal.aborted) return
 
@@ -329,17 +311,14 @@ export async function watch(ctx: SourceContext, signal: AbortSignal): Promise<vo
     for (const [key, watched] of next) {
       if (open_.has(key)) continue
       open_.set(key, open(watched))
-      mark('dir-open', `${watched.role} ${watched.path}`)
     }
     return config
   }
 
   const first = sync()
   if (!first || first.dirs.length === 0) {
-    mark('watch-paused', 'no dirs yet — waiting for Settings')
     ctx.report(SOURCE, { state: 'paused', detail: '还没有配置目录（面板 → Sources 里加）' })
   } else {
-    mark('watch-ready', `dirs=${first.dirs.map(d => d.role).join(',')}`)
     ctx.report(SOURCE, { state: 'ready', detail: `监听 ${first.dirs.length} 个目录` })
   }
 
