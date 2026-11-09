@@ -193,6 +193,14 @@ function routes(runtime: HttpHost): Routes {
     'GET tickets/:id': ({ params }) => ticketPage(runtime, params.id),
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
+    // A pointer only (2026-11-09): the project's contents and status stay in the ledger, so this cannot make two copies of
+    // one fact disagree. Sending no `project` clears the pointer.
+    'POST tickets/:id/project': async ({ params, body }) => {
+      const id = ticket(params.id)
+      const { project } = z.object({ project: z.string().trim().max(120).optional() }).parse(await body())
+      runtime.engine.setProject(id, project || undefined)
+      return { project: project || null }
+    },
     // A line for the worker of an open ticket: `steer` puts it into the turn the worker is running, and a ticket with no
     // running assignment keeps it for the next one, which is what a person typing into that ticket means to do.
     'POST tickets/:id/say': async ({ params, body }) => {

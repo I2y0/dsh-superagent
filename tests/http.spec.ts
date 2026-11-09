@@ -96,3 +96,22 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
 })
+
+/**
+ * 2026-11-09 需求：票上只放一个项目指针，「票查项目」要能答。
+ * 反向的「项目查票」在清单那边（`project.mjs` 的 slices 就是票号），不在这里——两处各答一半，谁也不抄谁。
+ */
+it('points a ticket at a project by id, and clears the pointer when asked for none', async () => {
+  const calls: (string | undefined)[] = []
+  const call = serve({
+    store: { tickets: { get: (id: string) => (id === 't1' ? { id } : undefined) } },
+    engine: { setProject: (id: string, project: string | undefined) => { calls.push(project); return { id } } },
+    machine: { promptMaxChars: { get: () => 1000 } },
+  })
+  expect((await call('POST', 'tickets/t1/project', { project: 'p-abc' })).body).toEqual({ project: 'p-abc' })
+  expect((await call('POST', 'tickets/t1/project', {})).body).toEqual({ project: null })
+  expect(calls).toEqual(['p-abc', undefined])
+  // 不存在的票当场 404，不许静默写进空指针
+  const missing = await call('POST', 'tickets/nope/project', { project: 'p-abc' })
+  expect(missing.status).toBe(404)
+})

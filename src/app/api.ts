@@ -35,6 +35,7 @@ export interface Api {
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }
   'POST tickets/:id/say': { body: { text: string }; response: { said: true } }
+  'POST tickets/:id/project': { body: { project?: string }; response: { project: string | null } }
   'POST executor/pause': { body: { paused: boolean }; response: { paused: boolean } }
   'PUT settings/:block': { body: { value: unknown; revision: number }; response: { revision: number; restarting: boolean } }
   'GET policy/history': { response: HistoryView }

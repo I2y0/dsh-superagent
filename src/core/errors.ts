@@ -9,6 +9,8 @@ export const USER_ERRORS = {
   unknownPromptPart: ['refused', 'Unknown built-in prompt part {part}'],
   ticketEnded: ['refused', 'Ticket has ended'],
   assignmentEnded: ['refused', 'Assignment has ended; a newer assignment owns this ticket'],
+  /** A project pointer is an id, not a sentence: whitespace means the caller sent the wrong thing (2026-11-09). */
+  badProject: ['refused', 'A project is named by an id without whitespace: {project}'],
   evalFinished: ['refused', 'Eval {eval} has finished or a later eval replaced it; decide the trigger\'s current eval'],
   notAdmissible: ['refused', 'Trigger is not admissible: {reason}'],
   notExplicit: ['refused', 'An accept through orchestrator_route is for explicit requests from allowed senders; assess proactive candidates with orchestrator_eval and orchestrator_eval_decide'],

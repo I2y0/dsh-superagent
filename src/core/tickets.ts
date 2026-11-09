@@ -484,11 +484,27 @@ export class Tickets extends EnginePart {
     this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
   }
   /**
+   * Point a ticket at the project it is a slice of, by id; `undefined` clears the pointer.
+   *
+   * Only the id is stored: what the project contains and how far it got is the ledger's business (2026-11-09, the seat's
+   * requirement), so a wrong ledger line can be fixed without touching any ticket, and two copies cannot drift apart.
+   * @throws UserError when the ticket is unknown.
+   */
+  setProject(ticketId: string, project: string | undefined): Ticket {
+    const ticket = this.require(ticketId)
+    const id = typeof project === 'string' ? project.trim() : ''
+    if (id && /\s/.test(id)) throw new UserError('badProject', { project: id })
+    if (id) ticket.project = id
+    else delete ticket.project
+    ticket.updatedAt = this.now()
+    this.repo.tickets.save(ticket)
+    return this.require(ticketId)
+  }
+  /**
    * Give an open ticket's Executor a fact as a note Input, such as what another ticket found; it grants nothing (see `TicketInput`).
    * @throws UserError when the ticket is unknown or has ended.
    */
-  note(ticketId: string, text: string): Ticket {
-    const ticket = this.require(ticketId)
+  note(ticketId: string, text: string): Ticket {    const ticket = this.require(ticketId)
     if (!liveTicket(ticket)) throw new UserError('ticketEnded')
     const at = this.now()
     this.addInput(ticket, { id: key('input', ticketId, 'note', at, text), kind: 'note', text, at })

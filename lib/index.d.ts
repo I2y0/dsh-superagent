@@ -1,4 +1,4 @@
-import { $ as Trigger, A as Attention, B as PolicyEffect, C as rotationReason, D as Assignment, E as AdmissionCell, F as Execution, G as Thread, H as Residency, I as Follow, J as ThreadRef, K as ThreadFact, L as FollowupRecords, M as Decision, N as DecisionKind, O as AssignmentOutcome, P as Evaluation, Q as TicketOutcome, R as Mandate, S as rotationOf, T as ActorRef, U as Strength, V as ReportState, W as Text, X as TicketEndBy, Y as Ticket, Z as TicketInput, _ as RESIDENT_WEEK_MS, _t as reasonText, a as DomainEvent, at as latestReport, b as idleResident, bt as Deployment, c as GateResult, ct as readUntil, d as Policy, dt as threadKey, et as TriggerDisposition, f as ReplyStatus, ft as ticketOutcome, g as RESIDENT_RULES, gt as ReasonCode, h as SourceScope, ht as Reason, i as Candidate, it as latestAssignment, j as ChannelRef, k as AssignmentState, l as OutboundMessage, lt as runningAssignment, m as ScopeResult, mt as REASONS, n as AssessmentOutcome, nt as followupOwners, o as DomainEvents, ot as liveTicket, p as Repositories, pt as waitsForPerson, q as ThreadFacts, r as Assessor, rt as isoTime, s as Executor, st as reached, t as ReceiveResult, tt as assignmentOutcome, u as Outbox, ut as settled, v as ResidentRules, vt as said, w as AcceptMode, x as rotationLabel, xt as DeploymentConfig, y as RotationReason, yt as Config, z as MandateBasis } from "./intake-DjKekxGR.js";
+import { $ as Trigger, A as Attention, B as PolicyEffect, C as rotationReason, D as Assignment, E as AdmissionCell, F as Execution, G as Thread, H as Residency, I as Follow, J as ThreadRef, K as ThreadFact, L as FollowupRecords, M as Decision, N as DecisionKind, O as AssignmentOutcome, P as Evaluation, Q as TicketOutcome, R as Mandate, S as rotationOf, T as ActorRef, U as Strength, V as ReportState, W as Text, X as TicketEndBy, Y as Ticket, Z as TicketInput, _ as RESIDENT_WEEK_MS, _t as reasonText, a as DomainEvent, at as latestReport, b as idleResident, bt as Deployment, c as GateResult, ct as readUntil, d as Policy, dt as threadKey, et as TriggerDisposition, f as ReplyStatus, ft as ticketOutcome, g as RESIDENT_RULES, gt as ReasonCode, h as SourceScope, ht as Reason, i as Candidate, it as latestAssignment, j as ChannelRef, k as AssignmentState, l as OutboundMessage, lt as runningAssignment, m as ScopeResult, mt as REASONS, n as AssessmentOutcome, nt as followupOwners, o as DomainEvents, ot as liveTicket, p as Repositories, pt as waitsForPerson, q as ThreadFacts, r as Assessor, rt as isoTime, s as Executor, st as reached, t as ReceiveResult, tt as assignmentOutcome, u as Outbox, ut as settled, v as ResidentRules, vt as said, w as AcceptMode, x as rotationLabel, xt as DeploymentConfig, y as RotationReason, yt as Config, z as MandateBasis } from "./intake-DIDxI1cw.js";
 import { Context } from "@deepseek-ai/cordis";
 //#region src/core/part.d.ts
 interface EngineOptions {
@@ -159,6 +159,12 @@ declare class Engine {
    */
   stopTicket(ticketId: string, reason?: string): Ticket;
   /**
+   * A person points a ticket at the project it belongs to, or clears that pointer with `undefined`.
+   * A pointer only: the project's contents stay in the ledger.
+   * @throws UserError when the ticket is unknown.
+   */
+  setProject(ticketId: string, project: string | undefined): Ticket;
+  /**
    * A person retries a ticket whose worker reported failed or blocked (or whose input delivery failed): the stalled
    * Assignment ends and a new one starts under the same Mandate.
    * @throws UserError when the ticket is unknown, has ended, or is not retryable.
@@ -240,7 +246,7 @@ type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>;
 /** What the main Session asks of the Engine. */
 type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>;
 /** What people ask of the Engine, through the panel or the main Session. */
-type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>;
+type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss' | 'setProject'>;
 /** What Settings tells the Engine. */
 type EngineForSettings = Pick<Engine, 'policyChanged'>;
 /** What the Executor tells the Engine, and what its workers ask of it. */
@@ -258,6 +264,8 @@ declare const USER_ERRORS: {
   readonly unknownPromptPart: readonly ["refused", "Unknown built-in prompt part {part}"];
   readonly ticketEnded: readonly ["refused", "Ticket has ended"];
   readonly assignmentEnded: readonly ["refused", "Assignment has ended; a newer assignment owns this ticket"];
+  /** A project pointer is an id, not a sentence: whitespace means the caller sent the wrong thing (2026-11-09). */
+  readonly badProject: readonly ["refused", "A project is named by an id without whitespace: {project}"];
   readonly evalFinished: readonly ["refused", "Eval {eval} has finished or a later eval replaced it; decide the trigger's current eval"];
   readonly notAdmissible: readonly ["refused", "Trigger is not admissible: {reason}"];
   readonly notExplicit: readonly ["refused", "An accept through orchestrator_route is for explicit requests from allowed senders; assess proactive candidates with orchestrator_eval and orchestrator_eval_decide"];

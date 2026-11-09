@@ -690,6 +690,7 @@ const TEXT = {
   'userError.unknownPromptPart': ['没有内置提示词段落 {part}。', USER_ERRORS.unknownPromptPart[1]],
   'userError.ticketEnded': ['工单已结束。', USER_ERRORS.ticketEnded[1]],
   'userError.assignmentEnded': ['这个派工已结束，工单已由较新的派工接手。', USER_ERRORS.assignmentEnded[1]],
+  'userError.badProject': ['项目指针要写项目 id（不含空格），收到的是：{project}', USER_ERRORS.badProject[1]],
   'userError.evalFinished': ['评估 {eval} 已结束，或已被之后的评估取代；请对这个触发当前的评估做决定。', USER_ERRORS.evalFinished[1]],
   'userError.notAdmissible': ['这个触发未通过准入：{reason}', USER_ERRORS.notAdmissible[1]],
   'userError.notExplicit': ['通过 orchestrator_route 接单只用于名单内发送者的明确请求；主动接单的候选请用 orchestrator_eval 和 orchestrator_eval_decide 研判。', USER_ERRORS.notExplicit[1]],

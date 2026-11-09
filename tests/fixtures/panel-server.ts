@@ -342,6 +342,15 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     if (!ticketOf(params.id)) return refuse(404, 'Ticket not found')
     return { said: true }
   } },
+  'POST tickets/:id/project': { body: true, answer: ({ params, body }) => {
+    const found = ticketOf(params.id)
+    if (!found) return refuse(404, 'Ticket not found')
+    const project = typeof body.project === 'string' && body.project.trim() ? body.project.trim() : undefined
+    const target = found as { project?: string }
+    if (project) target.project = project
+    else delete target.project
+    return { project: project ?? null }
+  } },
   'POST executor/pause': { body: true, answer: ({ body }) => {
     server.settings = { ...server.settings, paused: body.paused }
     server.revisions.pause = (server.revisions.pause ?? 0) + 1

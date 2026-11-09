@@ -480,6 +480,13 @@ interface Ticket {
   resident?: Residency;
   /** Open question for a person; cleared by the executor or when the ticket ends. */
   attention?: Attention;
+  /**
+   * The project this ticket is a slice of, by id only (2026-11-09 requirement).
+   *
+   * A pointer, never a copy: the project's status and its list of slices live in the project ledger, which is the one place
+   * they are true. A ticket only answers "which piece of work am I?", so nothing here can drift out of step with it.
+   */
+  project?: string;
   assignments: Assignment[];
   inputs: TicketInput[];
   /** Inputs not yet handed to a running assignment. */
