@@ -81,7 +81,9 @@ export const neneInboxKind: SourceKind<NeneInboxConfig> = {
     { key: 'dirs', label: { zh: '监控的目录', en: 'Watched directories' }, type: 'rows', columns: [
       { key: 'path', label: { zh: '目录', en: 'Directory' }, type: 'text' },
       { key: 'role', label: { zh: '算哪类信箱', en: 'Role' }, type: 'text', pattern: '[a-z][a-z0-9-]*' },
-      { key: 'extensions', label: { zh: '只收这些扩展名（空=全部）', en: 'Extensions' }, type: 'text' },
+      // `optional`: an empty cell means every file counts. Without it the form refuses to save an empty one, which made
+      // the panel unusable for the only case this kind needs first (watch everything in a mailbox).
+      { key: 'extensions', label: { zh: '只收这些扩展名（空=全部）', en: 'Extensions' }, type: 'text', optional: true },
     ] },
     { key: 'settleMs', label: { zh: '文件稳定多久才认 / 毫秒', en: 'Settle time / ms' }, type: 'number', advanced: true, min: 100, max: 60_000 },
   ],
